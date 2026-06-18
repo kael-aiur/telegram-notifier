@@ -1,0 +1,15 @@
+telegram-notifier:
+  data-dir: ./data
+
+spring:
+  application:
+    name: telegram-notifier-control-server
+  datasource:
+    driver-class-name: org.sqlite.JDBC
+    url: jdbc:sqlite:${telegram-notifier.data-dir}/telegram-notifier.db
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080

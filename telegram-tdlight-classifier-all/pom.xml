@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>site.kael.telegram</groupId>
+        <artifactId>telegram-notifier</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>telegram-tdlight-classifier-all</artifactId>
+    <name>Telegram TDLight Classifier All</name>
+    <description>Aggregates TDLight Java and mainstream native classifiers behind one project-local module.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-java</artifactId>
+        </dependency>
+
+        <!-- Linux glibc, OpenSSL 3: recommended for Debian/Ubuntu Bookworm+ Docker images. -->
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>linux_amd64_gnu_ssl3</classifier>
+        </dependency>
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>linux_arm64_gnu_ssl3</classifier>
+        </dependency>
+
+        <!-- Linux glibc, OpenSSL 1.x: keeps bare-metal older distributions usable. -->
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>linux_amd64_gnu_ssl1</classifier>
+        </dependency>
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>linux_arm64_gnu_ssl1</classifier>
+        </dependency>
+
+        <!-- Mainstream desktop platforms published by TDLight for this version. -->
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>windows_amd64</classifier>
+        </dependency>
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>macos_arm64</classifier>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,2 @@
+org.springframework.context.ApplicationContextInitializer=\
+site.kael.telegram.notifier.DataDirectoryInitializer

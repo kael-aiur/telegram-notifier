@@ -1,0 +1,1 @@
+"""Bundled Telegram Python worker."""
