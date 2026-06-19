@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+*.iml
+.vscode
+
+# Maven build output (will be rebuilt in Docker)
+**/target/
+
+# Local data
+data/
+
+# Claude/Codex
+.claude
+.codex
+
+# OpenSpec working files
+openspec/changes/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+LICENSE

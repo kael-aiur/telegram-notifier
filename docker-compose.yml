@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  telegram-notifier:
+    image: kael2018/telegram-notifier:latest
+    container_name: telegram-notifier
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - telegram-notifier-data:/telegram-notifier/data
+    environment:
+      # Telegram API credentials (required)
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-0}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      # Data directory (inside container)
+      - TELEGRAM_NOTIFIER_DATA_DIR=/telegram-notifier/data
+      # Python executable
+      - TELEGRAM_PYTHON_EXECUTABLE=python3
+      # JVM options (optional, for tuning)
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx512m}
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/system/bootstrap-status"]
+      interval: 30s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  telegram-notifier-data:
+    driver: local
