@@ -1,31 +1,238 @@
-from telegram_worker.protocol import emit_error, emit_status, read_commands
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from telegram_worker.messages import normalize_message
+from telegram_worker.protocol import emit_error, emit_message, emit_status, log, read_commands
+from telegram_worker.proxy import ProxyConfigurationError, select_proxy
+from telegram_worker.security import safe_exception
+
+
+@dataclass
+class WorkerState:
+    account_id: int = 0
+    client: object = None
+    phone_number: str = ""
+    phone_code_hash: str = ""
+    active_proxy_id: Optional[int] = None
+    authorization_state: str = "LOGGED_OUT"
+    data_dir: Path | None = None
+    api_hash: str = ""
+
+
+class TelegramWorker:
+    def __init__(self):
+        self.state = WorkerState()
+
+    def run(self):
+        try:
+            while True:
+                try:
+                    for command in read_commands():
+                        if not self.handle(command):
+                            return
+                    return
+                except KeyboardInterrupt:
+                    log("Ignored KeyboardInterrupt while waiting for Java command")
+        finally:
+            self._disconnect()
+
+    def handle(self, command):
+        command_type = command.get("type")
+        self.state.account_id = int(command.get("accountId") or self.state.account_id or 0)
+        try:
+            if command_type == "start":
+                self.start(command)
+            elif command_type == "submit_phone":
+                self.submit_phone(command.get("phoneNumber") or "")
+            elif command_type == "submit_code":
+                self.submit_code(command.get("code") or "")
+            elif command_type == "submit_password":
+                self.submit_password(command.get("password") or "")
+            elif command_type == "scan":
+                self.emit_status(self.state.authorization_state)
+            elif command_type == "stop":
+                self.stop()
+                return False
+            else:
+                emit_error(self.state.account_id, f"Unsupported command type: {command_type}")
+        except Exception as exc:
+            self.fail(safe_exception(exc, self._secrets()))
+        return True
+
+    def start(self, command):
+        self._disconnect()
+        self.state.phone_number = str(command.get("phoneNumber") or "").strip()
+        self.state.api_hash = str(command.get("apiHash") or "")
+        data_dir = Path(str(command.get("dataDir") or "")).expanduser()
+        if not data_dir:
+            raise ValueError("dataDir is required")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        if not data_dir.is_dir():
+            raise ValueError(f"dataDir is not a directory: {data_dir}")
+        self.state.data_dir = data_dir
+
+        active_proxy_id, proxy = select_proxy(command.get("proxies") or [])
+        self.state.active_proxy_id = active_proxy_id
+        self.state.client = self._create_client(
+            api_id=int(command.get("apiId") or 0),
+            api_hash=self.state.api_hash,
+            data_dir=data_dir,
+            proxy=proxy,
+        )
+        self.state.client.connect()
+        if self._is_authorized():
+            self.ready()
+            return
+        if not self.state.phone_number:
+            self.emit_status("WAIT_PHONE")
+            return
+        self._send_code(self.state.phone_number)
+
+    def submit_phone(self, phone_number):
+        self._require_client()
+        self.state.phone_number = str(phone_number or "").strip()
+        if not self.state.phone_number:
+            self.emit_status("WAIT_PHONE", "phoneNumber is required")
+            return
+        self._send_code(self.state.phone_number)
+
+    def submit_code(self, code):
+        self._require_client()
+        code = str(code or "").strip()
+        if not code:
+            self.emit_status("WAIT_CODE", "code is required")
+            return
+        if not self.state.phone_code_hash:
+            self.emit_status("WAIT_CODE", "Submit phone number before code")
+            return
+        try:
+            self.state.client.sign_in(self.state.phone_number, self.state.phone_code_hash, code)
+            self.ready()
+        except self._session_password_needed_error():
+            self.emit_status("WAIT_PASSWORD")
+        except self._bad_code_errors() as exc:
+            self.emit_status("WAIT_CODE", safe_exception(exc, [code, *self._secrets()]))
+
+    def submit_password(self, password):
+        self._require_client()
+        password = str(password or "")
+        if not password:
+            self.emit_status("WAIT_PASSWORD", "password is required")
+            return
+        try:
+            self.state.client.check_password(password)
+            self.ready()
+        except self._bad_password_errors() as exc:
+            self.emit_status("WAIT_PASSWORD", safe_exception(exc, [password, *self._secrets()]))
+
+    def ready(self):
+        self._register_message_handler()
+        self.emit_status("READY")
+
+    def stop(self):
+        self._disconnect()
+        self.emit_status("LOGGED_OUT")
+
+    def fail(self, message):
+        self.emit_status("ERROR", message)
+        emit_error(self.state.account_id, message)
+
+    def emit_status(self, state, error_message=None):
+        self.state.authorization_state = state
+        emit_status(self.state.account_id, state, self.state.active_proxy_id, error_message)
+
+    def _send_code(self, phone_number):
+        try:
+            sent_code = self.state.client.send_code(phone_number)
+            self.state.phone_code_hash = sent_code.phone_code_hash
+            log("Telegram verification code requested: " + _sent_code_summary(sent_code))
+            self.emit_status("WAIT_CODE")
+        except self._phone_number_errors() as exc:
+            self.emit_status("WAIT_PHONE", safe_exception(exc, [phone_number, *self._secrets()]))
+
+    def _create_client(self, api_id, api_hash, data_dir, proxy):
+        from pyrogram import Client
+
+        if api_id <= 0:
+            raise ValueError("apiId is required")
+        if not api_hash:
+            raise ValueError("apiHash is required")
+        return Client(
+            "telegram-account",
+            api_id=api_id,
+            api_hash=api_hash,
+            workdir=str(data_dir),
+            proxy=proxy,
+            in_memory=False,
+        )
+
+    def _is_authorized(self):
+        try:
+            return self.state.client.get_me() is not None
+        except Exception:
+            return False
+
+    def _register_message_handler(self):
+        from pyrogram import filters
+        from pyrogram.handlers import MessageHandler
+
+        self.state.client.add_handler(MessageHandler(self._on_message, filters.all))
+
+    def _on_message(self, _client, message):
+        try:
+            emit_message(normalize_message(self.state.account_id, message))
+        except Exception as exc:
+            log("Failed to normalize Telegram message: " + safe_exception(exc, self._secrets()))
+
+    def _disconnect(self):
+        client = self.state.client
+        self.state.client = None
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception as exc:
+            log("Failed to disconnect Telegram client: " + safe_exception(exc, self._secrets()))
+
+    def _require_client(self):
+        if self.state.client is None:
+            raise RuntimeError("Telegram client is not started")
+
+    def _secrets(self):
+        return [self.state.api_hash]
+
+    def _session_password_needed_error(self):
+        from pyrogram.errors import SessionPasswordNeeded
+
+        return SessionPasswordNeeded
+
+    def _bad_code_errors(self):
+        from pyrogram.errors import PhoneCodeEmpty, PhoneCodeExpired, PhoneCodeInvalid
+
+        return (PhoneCodeEmpty, PhoneCodeExpired, PhoneCodeInvalid)
+
+    def _bad_password_errors(self):
+        from pyrogram.errors import PasswordHashInvalid
+
+        return (PasswordHashInvalid,)
+
+    def _phone_number_errors(self):
+        from pyrogram.errors import PhoneNumberInvalid
+
+        return (PhoneNumberInvalid, ProxyConfigurationError)
 
 
 def main():
-    account_id = 0
-    for command in read_commands():
-        account_id = command.get("accountId", account_id)
-        command_type = command.get("type")
-        if command_type == "start":
-            phone_number = command.get("phoneNumber") or ""
-            emit_status(account_id, "WAIT_CODE" if phone_number else "WAIT_PHONE",
-                        _active_proxy_id(command.get("proxies") or []))
-        elif command_type == "submit_phone":
-            emit_status(account_id, "WAIT_CODE")
-        elif command_type == "submit_code":
-            emit_status(account_id, "READY")
-        elif command_type == "submit_password":
-            emit_status(account_id, "READY")
-        elif command_type == "scan":
-            emit_status(account_id, "READY")
-        elif command_type == "stop":
-            emit_status(account_id, "LOGGED_OUT")
-            return
-        else:
-            emit_error(account_id, f"Unsupported command type: {command_type}")
+    TelegramWorker().run()
 
 
-def _active_proxy_id(proxies):
-    if not proxies:
-        return None
-    return proxies[0].get("id")
+def _sent_code_summary(sent_code):
+    code_type = getattr(sent_code, "type", None)
+    next_type = getattr(sent_code, "next_type", None)
+    timeout = getattr(sent_code, "timeout", None)
+    return "type=%s nextType=%s timeout=%s" % (
+        code_type or "",
+        next_type or "",
+        "" if timeout is None else timeout,
+    )

@@ -1,5 +1,14 @@
 telegram-notifier:
-  data-dir: ./data
+  data-dir: ${TELEGRAM_NOTIFIER_DATA_DIR:./data}
+
+telegram:
+  client:
+    mode: ${TELEGRAM_CLIENT_MODE:MEMORY}
+    api-id: ${TELEGRAM_API_ID:${TELEGRAM_APP_ID:0}}
+    api-hash: ${TELEGRAM_API_HASH:${TELEGRAM_APP_HASH:}}
+    data-dir: ${TELEGRAM_CLIENT_DATA_DIR:${telegram-notifier.data-dir}/telegram-client}
+    python:
+      executable: ${TELEGRAM_PYTHON_EXECUTABLE:python3}
 
 spring:
   application:

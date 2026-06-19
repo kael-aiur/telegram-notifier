@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -43,6 +45,15 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     private final List<TelegramConnectionStatusListener> statusListeners = new CopyOnWriteArrayList<>();
     private volatile Path resolvedWorkerScript;
     private volatile String dependencyValidationError;
+    private static final List<String> WORKER_RESOURCES = List.of(
+            "telegram-python-worker/main.py",
+            "telegram-python-worker/telegram_worker/__init__.py",
+            "telegram-python-worker/telegram_worker/protocol.py",
+            "telegram-python-worker/telegram_worker/security.py",
+            "telegram-python-worker/telegram_worker/proxy.py",
+            "telegram-python-worker/telegram_worker/messages.py",
+            "telegram-python-worker/telegram_worker/worker.py"
+    );
 
     public PythonSubprocessTelegramAccountSessionManager(TelegramClientProperties clientProperties,
                                                          PythonTelegramRuntimeProperties runtimeProperties,
@@ -71,9 +82,6 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
                 "dataDir", accountDirectory(config.accountId()).toString(),
                 "proxies", proxyPayload(config.proxies())
         ));
-        state.authorizationState = config.phoneNumber() == null || config.phoneNumber().isBlank()
-                ? AuthorizationState.WAIT_PHONE
-                : AuthorizationState.WAIT_CODE;
         state.errorMessage = null;
         return publishStatus(state);
     }
@@ -93,7 +101,6 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     public TelegramConnectionStatus submitPhone(long accountId, String phoneNumber) {
         var state = workers.computeIfAbsent(accountId, WorkerState::new);
         sendCommand(state, "submit_phone", Map.of("accountId", accountId, "phoneNumber", requireText(phoneNumber, "phoneNumber")));
-        state.authorizationState = AuthorizationState.WAIT_CODE;
         state.errorMessage = null;
         return publishStatus(state);
     }
@@ -177,9 +184,9 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
             return "Telegram api-hash is required for python subprocess mode";
         }
         try {
-            Files.createDirectories(clientProperties.getDataDir());
-            if (!Files.isDirectory(clientProperties.getDataDir()) || !Files.isWritable(clientProperties.getDataDir())) {
-                return "Telegram data-dir is not writable: " + clientProperties.getDataDir();
+            Files.createDirectories(dataDirectory());
+            if (!Files.isDirectory(dataDirectory()) || !Files.isWritable(dataDirectory())) {
+                return "Telegram data-dir is not writable: " + dataDirectory();
             }
             var workerScriptError = resolveWorkerScript();
             if (workerScriptError != null) {
@@ -191,13 +198,14 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
             }
             return null;
         } catch (IOException e) {
-            return "Telegram data-dir is not writable: " + clientProperties.getDataDir();
+            return "Telegram data-dir is not writable: " + dataDirectory();
         }
     }
 
     private void restartWorker(WorkerState state) {
         stopWorker(state);
         try {
+            state.stopping = false;
             Files.createDirectories(accountDirectory(state.accountId));
             var command = new ArrayList<String>();
             command.add(runtimeProperties.getExecutable());
@@ -205,14 +213,18 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
             command.addAll(runtimeProperties.getExtraArgs());
             var builder = new ProcessBuilder(command);
             builder.directory(workerDirectory().toFile());
+            builder.environment().put("PYTHONUNBUFFERED", "1");
             state.process = builder.start();
             state.writer = new BufferedWriter(new OutputStreamWriter(state.process.getOutputStream(), StandardCharsets.UTF_8));
             state.stdoutReader = new Thread(() -> readStdout(state), "telegram-python-worker-" + state.accountId + "-stdout");
             state.stderrReader = new Thread(() -> readStderr(state), "telegram-python-worker-" + state.accountId + "-stderr");
+            state.exitWatcher = new Thread(() -> watchProcessExit(state, state.process), "telegram-python-worker-" + state.accountId + "-exit");
             state.stdoutReader.setDaemon(true);
             state.stderrReader.setDaemon(true);
+            state.exitWatcher.setDaemon(true);
             state.stdoutReader.start();
             state.stderrReader.start();
+            state.exitWatcher.start();
         } catch (IOException e) {
             fail(state, "Failed to start Python worker: " + safeError(e));
         }
@@ -220,19 +232,19 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private String resolveWorkerScript() throws IOException {
         if (runtimeProperties.getWorkerScript() != null) {
-            if (!Files.isRegularFile(runtimeProperties.getWorkerScript())) {
-                return "Python worker script does not exist: " + runtimeProperties.getWorkerScript();
+            var workerScript = runtimeProperties.getWorkerScript().toAbsolutePath().normalize();
+            if (!Files.isRegularFile(workerScript)) {
+                return "Python worker script does not exist: " + workerScript;
             }
-            resolvedWorkerScript = runtimeProperties.getWorkerScript();
+            resolvedWorkerScript = workerScript;
             return null;
         }
         var workerDir = workerDirectory();
         Files.createDirectories(workerDir.resolve("telegram_worker"));
-        copyWorkerResource("telegram-python-worker/main.py", workerDir.resolve("main.py"));
-        copyWorkerResource("telegram-python-worker/telegram_worker/__init__.py", workerDir.resolve("telegram_worker").resolve("__init__.py"));
-        copyWorkerResource("telegram-python-worker/telegram_worker/protocol.py", workerDir.resolve("telegram_worker").resolve("protocol.py"));
-        copyWorkerResource("telegram-python-worker/telegram_worker/worker.py", workerDir.resolve("telegram_worker").resolve("worker.py"));
-        resolvedWorkerScript = workerDir.resolve("main.py");
+        for (String resource : WORKER_RESOURCES) {
+            copyWorkerResource(resource, workerDir.resolve(resource.substring("telegram-python-worker/".length())));
+        }
+        resolvedWorkerScript = workerDir.resolve("main.py").toAbsolutePath().normalize();
         return null;
     }
 
@@ -291,6 +303,7 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     }
 
     private void stopWorker(WorkerState state) {
+        state.stopping = true;
         if (state.writer != null) {
             try {
                 state.writer.close();
@@ -298,8 +311,19 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
             }
             state.writer = null;
         }
-        if (state.process != null) {
-            state.process.destroy();
+        var process = state.process;
+        if (process != null) {
+            try {
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroy();
+                }
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                process.destroyForcibly();
+            }
             state.process = null;
         }
     }
@@ -336,10 +360,29 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
         try (var reader = new BufferedReader(new InputStreamReader(state.process.getErrorStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                LOGGER.info("telegram python worker " + state.accountId + ": " + line);
+                var sanitized = sanitize(line);
+                state.rememberStderr(sanitized);
+                LOGGER.info("telegram python worker " + state.accountId + ": " + sanitized);
             }
         } catch (IOException e) {
             LOGGER.log(Level.FINE, "Failed to read Python worker stderr", e);
+        }
+    }
+
+    private void watchProcessExit(WorkerState state, Process process) {
+        try {
+            var exitCode = process.waitFor();
+            if (state.process == process) {
+                state.process = null;
+                state.writer = null;
+                if (!state.stopping) {
+                    var stderr = state.recentStderr();
+                    fail(state, "Python worker exited unexpectedly with code " + exitCode
+                            + (stderr.isBlank() ? "" : ". Recent stderr: " + stderr));
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -384,7 +427,7 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private TelegramConnectionStatus fail(WorkerState state, String message) {
         state.authorizationState = AuthorizationState.ERROR;
-        state.errorMessage = message;
+        state.errorMessage = sanitize(message);
         return publishStatus(state);
     }
 
@@ -421,14 +464,18 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     }
 
     private java.nio.file.Path accountDirectory(long accountId) {
-        return clientProperties.getDataDir().resolve("accounts").resolve(String.valueOf(accountId));
+        return dataDirectory().resolve("accounts").resolve(String.valueOf(accountId));
     }
 
     private Path workerDirectory() {
         if (runtimeProperties.getWorkingDirectory() != null) {
-            return runtimeProperties.getWorkingDirectory();
+            return runtimeProperties.getWorkingDirectory().toAbsolutePath().normalize();
         }
-        return clientProperties.getDataDir().resolve("runtime").resolve("python-worker");
+        return dataDirectory().resolve("runtime").resolve("python-worker");
+    }
+
+    private Path dataDirectory() {
+        return clientProperties.getDataDir().toAbsolutePath().normalize();
     }
 
     private String requireText(String value, String field) {
@@ -459,7 +506,27 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private String safeError(Throwable error) {
         var message = error.getMessage();
-        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
+        return sanitize(message == null || message.isBlank() ? error.getClass().getSimpleName() : message);
+    }
+
+    private String sanitize(String value) {
+        if (value == null) {
+            return null;
+        }
+        var output = value;
+        if (clientProperties.getApiHash() != null && !clientProperties.getApiHash().isBlank()) {
+            output = output.replace(clientProperties.getApiHash(), "******");
+        }
+        for (var state : workers.values()) {
+            if (state.config != null && state.config.proxies() != null) {
+                for (ProxyConfig proxy : state.config.proxies()) {
+                    if (proxy.password() != null && !proxy.password().isBlank()) {
+                        output = output.replace(proxy.password(), "******");
+                    }
+                }
+            }
+        }
+        return output;
     }
 
     private static final class WorkerState {
@@ -469,6 +536,9 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
         private volatile BufferedWriter writer;
         private volatile Thread stdoutReader;
         private volatile Thread stderrReader;
+        private volatile Thread exitWatcher;
+        private volatile boolean stopping;
+        private final ArrayDeque<String> recentStderr = new ArrayDeque<>();
         private volatile AuthorizationState authorizationState = AuthorizationState.LOGGED_OUT;
         private volatile Long activeProxyId;
         private volatile String errorMessage;
@@ -479,6 +549,20 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
         private TelegramConnectionStatus status() {
             return new TelegramConnectionStatus(accountId, authorizationState, activeProxyId, errorMessage);
+        }
+
+        private synchronized void rememberStderr(String line) {
+            if (line == null || line.isBlank()) {
+                return;
+            }
+            recentStderr.addLast(line);
+            while (recentStderr.size() > 8) {
+                recentStderr.removeFirst();
+            }
+        }
+
+        private synchronized String recentStderr() {
+            return String.join(" | ", recentStderr);
         }
     }
 }

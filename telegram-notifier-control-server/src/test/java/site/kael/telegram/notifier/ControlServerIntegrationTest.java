@@ -97,6 +97,11 @@ class ControlServerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0]").value(1));
 
+        mvc.perform(get("/api/accounts/1").header("X-Auth-Token", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authorizationState").value("LOGGED_OUT"))
+                .andExpect(jsonPath("$.activeProxyId").value(1));
+
         mvc.perform(post("/api/accounts/1/start").header("X-Auth-Token", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authorizationState").value("WAIT_PHONE"))
