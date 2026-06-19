@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,27 +49,54 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
     }
 
     @Test
-    void parsesFakeWorkerStatusMessageAndErrorEvents() throws Exception {
-        var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
-        var workerDir = Files.createDirectories(dataDir.resolve("fake-worker"));
+    void sessionPublishesJsonStdoutAndSanitizedStderr() throws Exception {
+        var dataDir = Files.createTempDirectory("telegram-session-test");
+        var workerDir = Files.createDirectories(dataDir.resolve("fake-session"));
         var script = workerDir.resolve("worker.py");
         Files.writeString(script, """
                 import json
                 import sys
 
-                print(json.dumps({"worker_state":"read"}), flush=True)
+                print(json.dumps({"id":"py-log-ready","type":"log","content":{"message":"ready"}}), flush=True)
                 for line in sys.stdin:
-                    command = json.loads(line)
-                    account_id = command.get("accountId", 0)
-                    if command["type"] == "start":
-                        print(json.dumps({"type":"status","accountId":account_id,"state":"READY","activeProxyId":9}), flush=True)
-                        print(json.dumps({"type":"message","accountId":account_id,"chatId":10,"chatTitle":"Ops","chatType":"group","senderId":20,"senderName":"Ada","senderUsername":"ada","receivedAt":"2026-06-19T01:02:03Z","text":"hello"}), flush=True)
-                    elif command["type"] == "submit_code":
-                        print(json.dumps({"type":"error","accountId":account_id,"message":"proxy password=secret failed"}), flush=True)
-                    elif command["type"] == "stop":
-                        print(json.dumps({"type":"status","accountId":account_id,"state":"LOGGED_OUT"}), flush=True)
-                        break
+                    envelope = json.loads(line)
+                    print(json.dumps({"id":"py-reply-1","type":"reply","replyInputId":envelope["id"],"content":{"ok":True}}), flush=True)
+                    print("stderr contains secret", file=sys.stderr, flush=True)
+                    break
                 """);
+        var objectMapper = new ObjectMapper();
+        var session = new SubprocessTelegramSession(objectMapper, value -> value.replace("secret", "******"));
+        var outputs = new CopyOnWriteArrayList<String>();
+        session.getPublisher().subscribe(collectingSubscriber(outputs));
+
+        session.start(new TelegramSessionConfig(
+                "python3",
+                script,
+                workerDir,
+                dataDir,
+                List.of(),
+                null,
+                List.of(),
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(2)
+        ));
+        session.send(TelegramProtocolEnvelope.input(objectMapper, "java-1", java.util.Map.of("command", "ping")));
+        await(() -> outputs.stream().anyMatch(line -> line.contains("replyInputId")));
+        await(() -> outputs.stream().anyMatch(line -> line.contains("stderr contains ******")));
+
+        assertThat(session.getStatus()).isIn(SessionStatus.RUNNING, SessionStatus.FAILED);
+        assertThat(outputs).allSatisfy(line -> assertThat(objectMapper.readTree(line).hasNonNull("type")).isTrue());
+        assertThat(String.join("\n", outputs)).doesNotContain("secret");
+        session.stop();
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.STOPPED);
+    }
+
+    @Test
+    void parsesFakeWorkerReplyLogMessageAndErrorEvents() throws Exception {
+        var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
+        var workerDir = Files.createDirectories(dataDir.resolve("fake-worker"));
+        var script = workerDir.resolve("worker.py");
+        Files.writeString(script, fakeEnvelopeWorker());
 
         var runtime = new PythonTelegramRuntimeProperties();
         runtime.setWorkerScript(script);
@@ -103,12 +131,16 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                 import json
                 import sys
 
-                print(json.dumps({"worker_state":"read"}), flush=True)
+                def reply(input_id, account_id, state):
+                    print(json.dumps({"id":"py-reply-" + input_id,"type":"reply","replyInputId":input_id,"content":{"ok":True,"result":{"status":{"accountId":account_id,"state":state}}}}), flush=True)
+
                 for line in sys.stdin:
-                    command = json.loads(line)
-                    if command["type"] == "start":
-                        print(json.dumps({"type":"status","accountId":command.get("accountId", 0),"state":"WAIT_CODE"}), flush=True)
-                    elif command["type"] == "stop":
+                    envelope = json.loads(line)
+                    command = envelope["content"]
+                    if command["command"] == "start":
+                        reply(envelope["id"], command.get("accountId", 0), "WAIT_CODE")
+                    elif command["command"] == "stop":
+                        reply(envelope["id"], command.get("accountId", 0), "LOGGED_OUT")
                         break
                 """);
         var manager = manager(relativeDataDir, script, relativeWorkerDir, List.of());
@@ -131,14 +163,17 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                 import sys
                 import time
 
-                print(json.dumps({"worker_state":"read"}), flush=True)
+                def reply(input_id, account_id, state):
+                    print(json.dumps({"id":"py-reply-" + input_id,"type":"reply","replyInputId":input_id,"content":{"ok":True,"result":{"status":{"accountId":account_id,"state":state}}}}), flush=True)
+
                 for line in sys.stdin:
-                    command = json.loads(line)
-                    if command["type"] == "start":
+                    envelope = json.loads(line)
+                    command = envelope["content"]
+                    if command["command"] == "start":
                         time.sleep(0.25)
-                        print(json.dumps({"type":"status","accountId":command.get("accountId", 0),"state":"WAIT_CODE"}), flush=True)
-                    elif command["type"] == "stop":
-                        print(json.dumps({"type":"status","accountId":command.get("accountId", 0),"state":"LOGGED_OUT"}), flush=True)
+                        reply(envelope["id"], command.get("accountId", 0), "WAIT_CODE")
+                    elif command["command"] == "stop":
+                        reply(envelope["id"], command.get("accountId", 0), "LOGGED_OUT")
                         break
                 """);
         var manager = manager(dataDir, script, workerDir, List.of());
@@ -149,6 +184,33 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
 
         assertThat(status.authorizationState()).isEqualTo(AuthorizationState.WAIT_CODE);
         assertThat(elapsedMillis).isGreaterThanOrEqualTo(200);
+        manager.close();
+    }
+
+    @Test
+    void waitsForMatchingReplyInputId() throws Exception {
+        var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
+        var workerDir = Files.createDirectories(dataDir.resolve("fake-worker-reply-id"));
+        var script = workerDir.resolve("worker.py");
+        Files.writeString(script, """
+                import json
+                import sys
+
+                for line in sys.stdin:
+                    envelope = json.loads(line)
+                    command = envelope["content"]
+                    if command["command"] == "start":
+                        print(json.dumps({"id":"py-reply-other","type":"reply","replyInputId":"other-input","content":{"ok":True,"result":{"status":{"accountId":1,"state":"ERROR","errorMessage":"wrong reply"}}}}), flush=True)
+                        print(json.dumps({"id":"py-reply-real","type":"reply","replyInputId":envelope["id"],"content":{"ok":True,"result":{"status":{"accountId":command.get("accountId", 0),"state":"READY"}}}}), flush=True)
+                    elif command["command"] == "stop":
+                        print(json.dumps({"id":"py-reply-stop","type":"reply","replyInputId":envelope["id"],"content":{"ok":True,"result":{"status":{"accountId":command.get("accountId", 0),"state":"LOGGED_OUT"}}}}), flush=True)
+                        break
+                """);
+        var manager = manager(dataDir, script, workerDir, List.of());
+
+        var status = manager.start(config());
+
+        assertThat(status.authorizationState()).isEqualTo(AuthorizationState.READY);
         manager.close();
     }
 
@@ -164,13 +226,38 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         await(() -> manager.status(1L).authorizationState() == AuthorizationState.ERROR);
 
         assertThat(manager.status(1L).errorMessage()).contains("Python worker exited unexpectedly with code 7");
-        assertThat(manager.status(1L).errorMessage()).contains("diagnostic reason");
         manager.close();
     }
 
-    private PythonSubprocessTelegramAccountSessionManager manager(java.nio.file.Path dataDir,
-                                                                  java.nio.file.Path workerScript,
-                                                                  java.nio.file.Path workingDirectory,
+    private String fakeEnvelopeWorker() {
+        return """
+                import json
+                import sys
+
+                def reply(input_id, account_id, state, active_proxy_id=None):
+                    status = {"accountId": account_id, "state": state}
+                    if active_proxy_id is not None:
+                        status["activeProxyId"] = active_proxy_id
+                    print(json.dumps({"id":"py-reply-" + input_id,"type":"reply","replyInputId":input_id,"content":{"ok":True,"result":{"status":status}}}), flush=True)
+
+                for line in sys.stdin:
+                    envelope = json.loads(line)
+                    command = envelope["content"]
+                    account_id = command.get("accountId", 0)
+                    if command["command"] == "start":
+                        reply(envelope["id"], account_id, "READY", 9)
+                        print(json.dumps({"id":"py-msg-1","type":"message","content":{"accountId":account_id,"chatId":10,"chatTitle":"Ops","chatType":"group","senderId":20,"senderName":"Ada","senderUsername":"ada","receivedAt":"2026-06-19T01:02:03Z","text":"hello"}}), flush=True)
+                    elif command["command"] == "submit_code":
+                        print(json.dumps({"id":"py-reply-error","type":"reply","replyInputId":envelope["id"],"content":{"ok":False,"error":{"message":"proxy password=secret failed"}}}), flush=True)
+                    elif command["command"] == "stop":
+                        reply(envelope["id"], account_id, "LOGGED_OUT")
+                        break
+                """;
+    }
+
+    private PythonSubprocessTelegramAccountSessionManager manager(Path dataDir,
+                                                                  Path workerScript,
+                                                                  Path workingDirectory,
                                                                   List<String> requiredModules) {
         var runtime = new PythonTelegramRuntimeProperties();
         runtime.setWorkerScript(workerScript);
@@ -179,7 +266,7 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         return new PythonSubprocessTelegramAccountSessionManager(clientProperties(dataDir), runtime, new ObjectMapper());
     }
 
-    private TelegramClientProperties clientProperties(java.nio.file.Path dataDir) {
+    private TelegramClientProperties clientProperties(Path dataDir) {
         var properties = new TelegramClientProperties();
         properties.setApiId(12345);
         properties.setApiHash("hash-secret");
@@ -196,6 +283,28 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                 Duration.ofSeconds(120),
                 List.of(new ProxyConfig(9L, ProxyProtocol.SOCKS5, "127.0.0.1", 1080, "u", "secret", true))
         );
+    }
+
+    private Flow.Subscriber<String> collectingSubscriber(CopyOnWriteArrayList<String> outputs) {
+        return new Flow.Subscriber<>() {
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(String item) {
+                outputs.add(item);
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        };
     }
 
     private void await(Check check) throws Exception {

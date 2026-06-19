@@ -1,7 +1,5 @@
-## Purpose
-Defines the Python subprocess Telegram worker runtime, including the Java session abstraction, subprocess lifecycle, startup, session reuse, authorization commands, proxy mapping, JSON Lines envelope protocol, events, and sensitive data handling.
+## ADDED Requirements
 
-## Requirements
 ### Requirement: TelegramSession 子进程交互接口
 `telegram-python-subprocess-runtime` SHALL expose a Java `TelegramSession` abstraction for low-level Python subprocess interaction. `TelegramSession` MUST provide `start(config)`, `send(String str)`, `java.util.concurrent.Flow.Publisher<String> getPublisher()`, `stop()`, and `getStatus()`. The abstraction MUST NOT expose Telegram authorization state, account business operations, or message event domain objects directly.
 
@@ -73,6 +71,8 @@ Python outputs that are direct results of a Java input SHALL use `replyInputId` 
 - **WHEN** Python handles an input that fetches unread messages for a chat
 - **THEN** every fetched message envelope MUST contain that input id as `replyInputId`, and Python MUST emit a final `type=reply` envelope with the same `replyInputId` to mark the input complete
 
+## MODIFIED Requirements
+
 ### Requirement: Worker 启动配置
 Python Telegram worker SHALL initialize real Telegram client operations from command content received through the JSON Lines envelope protocol, not from legacy top-level command fields. The worker MUST use runtime configuration supplied by `TelegramSession.start(config)` for Python process execution and connectivity, including proxy configuration, and MUST use business input content for account-level values such as `accountId`, `apiId`, `apiHash`, `dataDir`, and `phoneNumber`. Worker MUST write all account runtime files into the account `dataDir`, and MUST NOT write them into the project directory, implicit current working directory, or system temporary directories.
 
@@ -83,21 +83,6 @@ Python Telegram worker SHALL initialize real Telegram client operations from com
 #### Scenario: 数据目录不可写
 - **WHEN** worker receives a Telegram account start input whose `dataDir` cannot be created or written
 - **THEN** worker MUST output a `type=reply` envelope with `replyInputId` matching the input and an error in `content`, and MUST NOT create a real Telegram connection
-
-### Requirement: Session 持久化
-Python Telegram worker SHALL 为每个账号使用隔离的 Telegram session 文件，并在服务或 worker 重启后复用已有有效 session。Session 文件 MUST 位于账号 `dataDir` 下。
-
-#### Scenario: 已有有效 session
-- **WHEN** worker 启动时账号 `dataDir` 中存在有效 Telegram session
-- **THEN** worker MUST 复用该 session 并输出 `READY` 状态
-
-#### Scenario: 无有效 session 且无手机号
-- **WHEN** worker 启动时没有有效 Telegram session 且 `phoneNumber` 为空
-- **THEN** worker MUST 输出 `WAIT_PHONE` 状态
-
-#### Scenario: 无有效 session 且有手机号
-- **WHEN** worker 启动时没有有效 Telegram session 且 `phoneNumber` 非空
-- **THEN** worker MUST 向 Telegram 请求验证码并输出 `WAIT_CODE` 状态
 
 ### Requirement: 授权命令处理
 Python Telegram worker SHALL support authorization business commands carried inside `type=input` envelope `content`, including phone submission, verification code submission, and two-step password submission. The worker MUST map Telegram authorization results to existing `AuthorizationState` names in reply content or business status content handled by the Java adapter. Authorization input errors MUST preserve a state that allows the user to continue input and MUST expose readable diagnostics without leaking the submitted secret.

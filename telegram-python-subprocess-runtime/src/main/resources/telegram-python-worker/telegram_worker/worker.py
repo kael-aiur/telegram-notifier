@@ -1,9 +1,11 @@
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from telegram_worker.messages import normalize_message
-from telegram_worker.protocol import emit_error, emit_message, emit_status, emit_worker_state, log, read_commands
+from telegram_worker.protocol import emit_error, emit_message, emit_reply, emit_status, emit_worker_state, log, read_commands
 from telegram_worker.proxy import ProxyConfigurationError, select_proxy
 from telegram_worker.security import safe_exception
 
@@ -23,10 +25,12 @@ class WorkerState:
 class TelegramWorker:
     def __init__(self):
         self.state = WorkerState()
+        self.runtime_config = _runtime_config()
+        self.current_input_id = None
 
     def run(self):
         try:
-            emit_worker_state("read")
+            emit_worker_state("ready")
             while True:
                 try:
                     for command in read_commands():
@@ -39,7 +43,8 @@ class TelegramWorker:
             self._disconnect()
 
     def handle(self, command):
-        command_type = command.get("type")
+        command_type = command.get("command") or command.get("type")
+        self.current_input_id = command.get("_input_id")
         self.state.account_id = int(command.get("accountId") or self.state.account_id or 0)
         try:
             if command_type == "start":
@@ -52,13 +57,17 @@ class TelegramWorker:
                 self.submit_password(command.get("password") or "")
             elif command_type == "scan":
                 self.emit_status(self.state.authorization_state)
+            elif command_type == "fetch_unread":
+                self.fetch_unread(command)
             elif command_type == "stop":
                 self.stop()
                 return False
             else:
-                emit_error(self.state.account_id, f"Unsupported command type: {command_type}")
+                emit_error(self.state.account_id, f"Unsupported command type: {command_type}", self.current_input_id)
         except Exception as exc:
             self.fail(safe_exception(exc, self._secrets()))
+        finally:
+            self.current_input_id = None
         return True
 
     def start(self, command):
@@ -73,7 +82,7 @@ class TelegramWorker:
             raise ValueError(f"dataDir is not a directory: {data_dir}")
         self.state.data_dir = data_dir
 
-        active_proxy_id, proxy = select_proxy(command.get("proxies") or [])
+        active_proxy_id, proxy = select_proxy(self.runtime_config.get("proxies") or [])
         self.state.active_proxy_id = active_proxy_id
         self.state.client = self._create_client(
             api_id=int(command.get("apiId") or 0),
@@ -127,8 +136,14 @@ class TelegramWorker:
         except self._bad_password_errors() as exc:
             self.emit_status("WAIT_PASSWORD", safe_exception(exc, [password, *self._secrets()]))
 
+    def fetch_unread(self, command):
+        self._require_client()
+        emit_reply(self.current_input_id, True, result={"count": 0, "hasMore": False})
+
     def ready(self):
         self._register_message_handler()
+        self._initialize_client()
+        log("Telegram message handler registered and update dispatcher initialized")
         self.emit_status("READY")
 
     def stop(self):
@@ -137,11 +152,11 @@ class TelegramWorker:
 
     def fail(self, message):
         self.emit_status("ERROR", message)
-        emit_error(self.state.account_id, message)
+        emit_error(self.state.account_id, message, self.current_input_id)
 
     def emit_status(self, state, error_message=None):
         self.state.authorization_state = state
-        emit_status(self.state.account_id, state, self.state.active_proxy_id, error_message)
+        emit_status(self.state.account_id, state, self.state.active_proxy_id, error_message, self.current_input_id)
 
     def _send_code(self, phone_number):
         try:
@@ -180,6 +195,12 @@ class TelegramWorker:
 
         self.state.client.add_handler(MessageHandler(self._on_message, filters.all))
 
+    def _initialize_client(self):
+        self._require_client()
+        if getattr(self.state.client, "is_initialized", False):
+            return
+        self.state.client.initialize()
+
     def _on_message(self, _client, message):
         try:
             emit_message(normalize_message(self.state.account_id, message))
@@ -192,6 +213,8 @@ class TelegramWorker:
         if client is None:
             return
         try:
+            if getattr(client, "is_initialized", False):
+                client.terminate()
             client.disconnect()
         except Exception as exc:
             log("Failed to disconnect Telegram client: " + safe_exception(exc, self._secrets()))
@@ -226,6 +249,15 @@ class TelegramWorker:
 
 def main():
     TelegramWorker().run()
+
+
+def _runtime_config():
+    raw = os.environ.get("TELEGRAM_SESSION_CONFIG") or "{}"
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
 
 
 def _sent_code_summary(sent_code):

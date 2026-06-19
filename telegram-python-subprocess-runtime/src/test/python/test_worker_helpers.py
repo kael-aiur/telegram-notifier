@@ -10,9 +10,10 @@ ROOT = Path(__file__).resolve().parents[2] / "main" / "resources" / "telegram-py
 sys.path.insert(0, str(ROOT))
 
 from telegram_worker.messages import normalize_message
-from telegram_worker.protocol import emit_error, emit_status
+from telegram_worker.protocol import emit_error, emit_log, emit_message, emit_reply, emit_status
 from telegram_worker.proxy import ProxyConfigurationError, select_proxy, to_pyrogram_proxy
 from telegram_worker.security import sanitize
+from telegram_worker.worker import TelegramWorker
 
 
 class WorkerHelperTest(unittest.TestCase):
@@ -51,20 +52,32 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(7, active_proxy_id)
         self.assertEqual("http", proxy["scheme"])
 
-    def test_emit_status_and_error_are_json_lines_and_masked(self):
+    def test_emit_reply_log_message_status_and_error_are_json_envelopes_and_masked(self):
         original_stdout = sys.stdout
         try:
             sys.stdout = io.StringIO()
-            emit_status(1, "WAIT_CODE", 2, "password=secret")
-            emit_error(1, "apiHash=abc")
+            emit_reply("java-1", True, result={"value": "ok"})
+            emit_log("password=secret")
+            emit_message({"text": "hello"})
+            emit_message({"text": "pulled"}, reply_input_id="java-fetch")
+            emit_status(1, "WAIT_CODE", 2, "password=secret", reply_input_id="java-status")
+            emit_error(1, "apiHash=abc", reply_input_id="java-error")
             lines = sys.stdout.getvalue().strip().splitlines()
         finally:
             sys.stdout = original_stdout
 
-        self.assertEqual("status", json.loads(lines[0])["type"])
-        self.assertEqual("error", json.loads(lines[1])["type"])
-        self.assertNotIn("secret", lines[0])
-        self.assertNotIn("abc", lines[1])
+        envelopes = [json.loads(line) for line in lines]
+        self.assertEqual("reply", envelopes[0]["type"])
+        self.assertEqual("java-1", envelopes[0]["replyInputId"])
+        self.assertEqual("log", envelopes[1]["type"])
+        self.assertEqual("message", envelopes[2]["type"])
+        self.assertNotIn("replyInputId", envelopes[2])
+        self.assertEqual("java-fetch", envelopes[3]["replyInputId"])
+        self.assertEqual("reply", envelopes[4]["type"])
+        self.assertFalse(envelopes[4]["content"]["ok"])
+        self.assertEqual("java-error", envelopes[5]["replyInputId"])
+        self.assertNotIn("secret", "\n".join(lines))
+        self.assertNotIn("abc", lines[5])
 
     def test_normalize_text_caption_and_empty_messages(self):
         chat = SimpleNamespace(id=100, title="Ops", type="supergroup")
@@ -80,6 +93,40 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual("Ops", text_event["chatTitle"])
         self.assertEqual("Ada Lovelace", text_event["senderName"])
         self.assertEqual("2026-06-19T01:02:03Z", text_event["receivedAt"])
+
+    def test_ready_registers_handler_and_initializes_client(self):
+        class FakeClient:
+            def __init__(self):
+                self.handlers = []
+                self.is_initialized = False
+
+            def add_handler(self, handler):
+                self.handlers.append(handler)
+
+            def initialize(self):
+                self.is_initialized = True
+
+        worker = TelegramWorker()
+        client = FakeClient()
+        worker.state.account_id = 1
+        worker.state.client = client
+        worker.current_input_id = "java-ready"
+        worker._register_message_handler = lambda: client.add_handler("handler")
+
+        original_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            worker.ready()
+            lines = sys.stdout.getvalue().strip().splitlines()
+        finally:
+            sys.stdout = original_stdout
+
+        envelopes = [json.loads(line) for line in lines]
+        self.assertEqual(["handler"], client.handlers)
+        self.assertTrue(client.is_initialized)
+        self.assertEqual("log", envelopes[0]["type"])
+        self.assertEqual("READY", envelopes[-1]["content"]["result"]["status"]["state"])
+        self.assertEqual("java-ready", envelopes[-1]["replyInputId"])
 
 
 if __name__ == "__main__":

@@ -12,15 +12,12 @@ import site.kael.telegram.starter.TelegramConnectionStatusListener;
 import site.kael.telegram.starter.TelegramMessageEvent;
 import site.kael.telegram.starter.TelegramMessageListener;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -31,15 +28,14 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public class PythonSubprocessTelegramAccountSessionManager implements TelegramAccountSessionManager, AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger(PythonSubprocessTelegramAccountSessionManager.class.getName());
-    private static final long WORKER_READY_TIMEOUT_SECONDS = 10;
     private static final long COMMAND_RESPONSE_TIMEOUT_SECONDS = 120;
 
     private final TelegramClientProperties clientProperties;
@@ -86,15 +82,14 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
                 "phoneNumber", nullToEmpty(config.phoneNumber()),
                 "apiId", clientProperties.getApiId(),
                 "apiHash", nullToEmpty(clientProperties.getApiHash()),
-                "dataDir", accountDirectory(config.accountId()).toString(),
-                "proxies", proxyPayload(config.proxies())
+                "dataDir", accountDirectory(config.accountId()).toString()
         ));
     }
 
     @Override
     public TelegramConnectionStatus stop(long accountId) {
         var state = workers.computeIfAbsent(accountId, WorkerState::new);
-        if (state.writer != null) {
+        if (state.session != null && state.session.getStatus() == SessionStatus.RUNNING) {
             sendCommandAndWaitStatus(state, "stop", Map.of("accountId", accountId), 5);
         }
         stopWorker(state);
@@ -205,32 +200,56 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     private boolean restartWorker(WorkerState state) {
         stopWorker(state);
         try {
-            state.stopping = false;
-            state.resetWorkerReady();
             Files.createDirectories(accountDirectory(state.accountId));
-            var command = new ArrayList<String>();
-            command.add(runtimeProperties.getExecutable());
-            command.add(resolvedWorkerScript.toString());
-            command.addAll(runtimeProperties.getExtraArgs());
-            var builder = new ProcessBuilder(command);
-            builder.directory(workerDirectory().toFile());
-            builder.environment().put("PYTHONUNBUFFERED", "1");
-            state.process = builder.start();
-            state.writer = new BufferedWriter(new OutputStreamWriter(state.process.getOutputStream(), StandardCharsets.UTF_8));
-            state.stdoutReader = new Thread(() -> readStdout(state), "telegram-python-worker-" + state.accountId + "-stdout");
-            state.stderrReader = new Thread(() -> readStderr(state), "telegram-python-worker-" + state.accountId + "-stderr");
-            state.exitWatcher = new Thread(() -> watchProcessExit(state, state.process), "telegram-python-worker-" + state.accountId + "-exit");
-            state.stdoutReader.setDaemon(true);
-            state.stderrReader.setDaemon(true);
-            state.exitWatcher.setDaemon(true);
-            state.stdoutReader.start();
-            state.stderrReader.start();
-            state.exitWatcher.start();
-            return awaitWorkerReady(state);
-        } catch (IOException e) {
+            var session = new SubprocessTelegramSession(objectMapper, this::sanitize);
+            subscribeSession(state, session);
+            session.start(sessionConfig(state.config));
+            state.session = session;
+            return true;
+        } catch (RuntimeException | IOException e) {
             fail(state, "Failed to start Python worker: " + safeError(e));
             return false;
         }
+    }
+
+    private TelegramSessionConfig sessionConfig(TelegramAccountConfig config) {
+        return new TelegramSessionConfig(
+                runtimeProperties.getExecutable(),
+                resolvedWorkerScript,
+                workerDirectory(),
+                dataDirectory(),
+                runtimeProperties.getExtraArgs(),
+                Map.of(),
+                sessionProxyPayload(config == null ? List.of() : config.proxies()),
+                Duration.ofSeconds(10),
+                Duration.ofSeconds(4)
+        );
+    }
+
+    private void subscribeSession(WorkerState state, TelegramSession session) {
+        session.getPublisher().subscribe(new Flow.Subscriber<>() {
+            private Flow.Subscription subscription;
+
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                this.subscription = subscription;
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(String item) {
+                handleWorkerLine(state, item);
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                fail(state, "Python session publisher failed: " + safeError(throwable));
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
     }
 
     private String resolveWorkerScript() throws IOException {
@@ -307,184 +326,177 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private void stopWorker(WorkerState state) {
         state.stopping = true;
-        if (state.writer != null) {
-            try {
-                state.writer.close();
-            } catch (IOException ignored) {
-            }
-            state.writer = null;
+        if (state.session != null) {
+            state.session.stop();
+            state.session = null;
         }
-        var process = state.process;
-        if (process != null) {
-            try {
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroy();
-                }
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                process.destroyForcibly();
-            }
-            state.process = null;
-        }
+        state.pendingReplies.values().forEach(PendingReply::complete);
+        state.pendingReplies.clear();
     }
 
-    private void sendCommand(WorkerState state, String type, Map<String, ?> fields) {
-        if (state.writer == null) {
+    private void sendCommand(WorkerState state, String command, Map<String, ?> fields) {
+        if (state.session == null || state.session.getStatus() != SessionStatus.RUNNING) {
             fail(state, "Python worker is not running");
             return;
         }
         try {
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("type", type);
-            payload.putAll(fields);
-            state.writer.write(objectMapper.writeValueAsString(payload));
-            state.writer.newLine();
-            state.writer.flush();
-        } catch (IOException e) {
+            state.session.send(inputEnvelope(state, command, fields));
+        } catch (RuntimeException e) {
             fail(state, "Failed to send command to Python worker: " + safeError(e));
         }
     }
 
-    private TelegramConnectionStatus sendCommandAndWaitStatus(WorkerState state, String type, Map<String, ?> fields) {
-        return sendCommandAndWaitStatus(state, type, fields, COMMAND_RESPONSE_TIMEOUT_SECONDS);
+    private TelegramConnectionStatus sendCommandAndWaitStatus(WorkerState state, String command, Map<String, ?> fields) {
+        return sendCommandAndWaitStatus(state, command, fields, COMMAND_RESPONSE_TIMEOUT_SECONDS);
     }
 
-    private TelegramConnectionStatus sendCommandAndWaitStatus(WorkerState state, String type, Map<String, ?> fields, long timeoutSeconds) {
-        if (state.writer == null) {
+    private TelegramConnectionStatus sendCommandAndWaitStatus(WorkerState state, String command, Map<String, ?> fields, long timeoutSeconds) {
+        if (state.session == null || state.session.getStatus() != SessionStatus.RUNNING) {
             return fail(state, "Python worker is not running");
         }
-        state.beginStatusResponse();
-        sendCommand(state, type, fields);
-        return awaitStatusResponse(state, type, timeoutSeconds);
-    }
-
-    private boolean awaitWorkerReady(WorkerState state) {
+        var inputId = nextInputId(state);
+        var pending = new PendingReply();
+        state.pendingReplies.put(inputId, pending);
         try {
-            if (state.workerReady.await(WORKER_READY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                return state.authorizationState != AuthorizationState.ERROR && state.writer != null;
+            state.session.send(inputEnvelope(inputId, command, fields));
+            if (!pending.await(timeoutSeconds, TimeUnit.SECONDS)) {
+                return fail(state, "Python worker did not return a reply for command '" + command
+                        + "' within " + timeoutSeconds + " seconds");
             }
-            fail(state, "Python worker did not report readiness within " + WORKER_READY_TIMEOUT_SECONDS + " seconds");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            fail(state, "Interrupted while waiting for Python worker readiness");
-        }
-        stopWorker(state);
-        return false;
-    }
-
-    private TelegramConnectionStatus awaitStatusResponse(WorkerState state, String commandType, long timeoutSeconds) {
-        try {
-            var response = state.awaitStatusResponse(timeoutSeconds, TimeUnit.SECONDS);
-            state.errorMessage = response.errorMessage();
-            return response;
-        } catch (TimeoutException e) {
-            return fail(state, "Python worker did not return a status for command '" + commandType
-                    + "' within " + timeoutSeconds + " seconds");
+            return pending.status == null ? state.status() : pending.status;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return fail(state, "Interrupted while waiting for Python worker command response");
+        } catch (RuntimeException e) {
+            return fail(state, "Failed to send command to Python worker: " + safeError(e));
         } finally {
-            state.clearStatusResponse();
+            state.pendingReplies.remove(inputId);
         }
     }
 
-    private void readStdout(WorkerState state) {
-        try (var reader = new BufferedReader(new InputStreamReader(state.process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                handleWorkerLine(state, line);
-            }
-        } catch (IOException e) {
-            fail(state, "Failed to read Python worker stdout: " + safeError(e));
-        }
+    private String inputEnvelope(WorkerState state, String command, Map<String, ?> fields) {
+        return inputEnvelope(nextInputId(state), command, fields);
     }
 
-    private void readStderr(WorkerState state) {
-        try (var reader = new BufferedReader(new InputStreamReader(state.process.getErrorStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                var sanitized = sanitize(line);
-                state.rememberStderr(sanitized);
-                LOGGER.info("telegram python worker " + state.accountId + ": " + sanitized);
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.FINE, "Failed to read Python worker stderr", e);
-        }
+    private String inputEnvelope(String inputId, String command, Map<String, ?> fields) {
+        var content = new LinkedHashMap<String, Object>();
+        content.put("command", command);
+        content.putAll(fields);
+        return TelegramProtocolEnvelope.input(objectMapper, inputId, content);
     }
 
-    private void watchProcessExit(WorkerState state, Process process) {
-        try {
-            var exitCode = process.waitFor();
-            if (state.process == process) {
-                state.process = null;
-                state.writer = null;
-                if (!state.stopping) {
-                    var stderr = state.recentStderr();
-                    fail(state, "Python worker exited unexpectedly with code " + exitCode
-                            + (stderr.isBlank() ? "" : ". Recent stderr: " + stderr));
-                }
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    private String nextInputId(WorkerState state) {
+        return "java-" + state.accountId + "-" + state.inputIds.incrementAndGet();
     }
 
     private void handleWorkerLine(WorkerState state, String line) {
         try {
-            var payload = objectMapper.readTree(line);
-            var workerState = text(payload, "worker_state");
-            if ("read".equals(workerState)) {
-                state.markWorkerReady();
-                return;
-            }
-            var type = text(payload, "type");
-            if ("status".equals(type)) {
-                handleStatus(state, payload);
-            } else if ("message".equals(type)) {
+            var payload = TelegramProtocolEnvelope.validate(objectMapper, line);
+            var type = TelegramProtocolEnvelope.text(payload, "type");
+            if (TelegramProtocolEnvelope.TYPE_REPLY.equals(type)) {
+                handleReply(state, payload);
+            } else if (TelegramProtocolEnvelope.TYPE_MESSAGE.equals(type)) {
                 handleMessage(state, payload);
-            } else if ("error".equals(type)) {
-                fail(state, text(payload, "message"));
+            } else if (TelegramProtocolEnvelope.TYPE_LOG.equals(type)) {
+                handleLog(state, payload);
             } else {
-                fail(state, "Invalid Python worker event: missing type");
+                LOGGER.info("telegram python worker " + state.accountId + " ignored protocol output type: " + type);
             }
         } catch (Exception e) {
             fail(state, "Invalid Python worker event: " + safeError(e));
         }
     }
 
-    private void handleStatus(WorkerState state, JsonNode payload) {
+    private void handleReply(WorkerState state, JsonNode payload) {
+        var replyInputId = TelegramProtocolEnvelope.text(payload, "replyInputId");
+        var content = payload.get("content");
+        TelegramConnectionStatus status = null;
+        var statusNode = statusNode(content);
+        if (statusNode != null) {
+            status = handleStatus(state, statusNode);
+        } else if (content != null && content.has("error")) {
+            status = fail(state, errorMessage(content.get("error")));
+        } else {
+            status = state.status();
+        }
+        var pending = state.pendingReplies.get(replyInputId);
+        if (pending != null) {
+            pending.status = status;
+            pending.complete();
+        }
+    }
+
+    private JsonNode statusNode(JsonNode content) {
+        if (content == null || !content.isObject()) {
+            return null;
+        }
+        if (content.has("status")) {
+            return content.get("status");
+        }
+        if (content.has("result") && content.get("result").has("status")) {
+            return content.get("result").get("status");
+        }
+        return null;
+    }
+
+    private TelegramConnectionStatus handleStatus(WorkerState state, JsonNode payload) {
         state.authorizationState = AuthorizationState.valueOf(text(payload, "state"));
         if (payload.hasNonNull("activeProxyId")) {
             state.activeProxyId = payload.get("activeProxyId").asLong();
         }
         state.errorMessage = payload.hasNonNull("errorMessage") ? payload.get("errorMessage").asText() : null;
-        var status = publishStatus(state);
-        state.completeStatusResponse(status);
+        return publishStatus(state);
     }
 
     private void handleMessage(WorkerState state, JsonNode payload) {
-        publishTestMessage(new TelegramMessageEvent(
+        if (payload.hasNonNull("replyInputId")) {
+            LOGGER.info("telegram python worker " + state.accountId + " received command-scoped message for "
+                    + payload.get("replyInputId").asText());
+            return;
+        }
+        var content = payload.has("content") ? payload.get("content") : payload;
+        var event = new TelegramMessageEvent(
                 state.accountId,
-                longValue(payload, "chatId"),
-                text(payload, "chatTitle"),
-                text(payload, "chatType"),
-                longValue(payload, "senderId"),
-                text(payload, "senderName"),
-                text(payload, "senderUsername"),
-                instant(payload, "receivedAt"),
-                text(payload, "text")
-        ));
+                longValue(content, "chatId"),
+                text(content, "chatTitle"),
+                text(content, "chatType"),
+                longValue(content, "senderId"),
+                text(content, "senderName"),
+                text(content, "senderUsername"),
+                instant(content, "receivedAt"),
+                text(content, "text")
+        );
+        LOGGER.info(() -> "telegram python worker " + state.accountId
+                + " received message event: chatId=" + event.chatId()
+                + ", chatType=" + event.chatType()
+                + ", senderId=" + event.senderId()
+                + ", senderUsername=" + nullToEmpty(event.senderUsername())
+                + ", receivedAt=" + event.receivedAt());
+        publishTestMessage(event);
+    }
+
+    private void handleLog(WorkerState state, JsonNode payload) {
+        var content = payload.get("content");
+        if (content == null) {
+            return;
+        }
+        var message = content.isObject() ? text(content, "message") : content.asText();
+        var sanitized = sanitize(message);
+        state.rememberLog(sanitized);
+        LOGGER.info("telegram python worker " + state.accountId + ": " + sanitized);
+        if (sanitized != null && sanitized.startsWith("Python worker exited unexpectedly")) {
+            fail(state, sanitized);
+        }
     }
 
     private TelegramConnectionStatus fail(WorkerState state, String message) {
         state.authorizationState = AuthorizationState.ERROR;
         state.errorMessage = sanitize(message);
         var status = publishStatus(state);
-        state.markWorkerReady();
-        state.completeStatusResponse(status);
+        state.pendingReplies.values().forEach(pending -> {
+            pending.status = status;
+            pending.complete();
+        });
         return status;
     }
 
@@ -501,26 +513,24 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
         return proxies.stream().filter(ProxyConfig::enabled).findFirst().map(ProxyConfig::id).orElse(null);
     }
 
-    private List<Map<String, Object>> proxyPayload(List<ProxyConfig> proxies) {
+    private List<TelegramSessionProxyConfig> sessionProxyPayload(List<ProxyConfig> proxies) {
         if (proxies == null) {
             return List.of();
         }
         return proxies.stream()
                 .filter(ProxyConfig::enabled)
-                .map(proxy -> {
-                    Map<String, Object> value = new LinkedHashMap<>();
-                    value.put("id", proxy.id());
-                    value.put("protocol", proxy.protocol().name());
-                    value.put("host", proxy.host());
-                    value.put("port", proxy.port());
-                    value.put("username", proxy.username());
-                    value.put("password", proxy.password());
-                    return value;
-                })
+                .map(proxy -> new TelegramSessionProxyConfig(
+                        proxy.id(),
+                        proxy.protocol().name(),
+                        proxy.host(),
+                        proxy.port(),
+                        proxy.username(),
+                        proxy.password()
+                ))
                 .toList();
     }
 
-    private java.nio.file.Path accountDirectory(long accountId) {
+    private Path accountDirectory(long accountId) {
         return dataDirectory().resolve("accounts").resolve(String.valueOf(accountId));
     }
 
@@ -547,18 +557,28 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     }
 
     private String text(JsonNode payload, String field) {
-        return payload.hasNonNull(field) ? payload.get(field).asText() : "";
+        return payload != null && payload.hasNonNull(field) ? payload.get(field).asText() : "";
     }
 
     private long longValue(JsonNode payload, String field) {
-        return payload.hasNonNull(field) ? payload.get(field).asLong() : 0L;
+        return payload != null && payload.hasNonNull(field) ? payload.get(field).asLong() : 0L;
     }
 
     private Instant instant(JsonNode payload, String field) {
-        if (!payload.hasNonNull(field) || payload.get(field).asText().isBlank()) {
+        if (payload == null || !payload.hasNonNull(field) || payload.get(field).asText().isBlank()) {
             return Instant.now();
         }
         return Instant.parse(payload.get(field).asText());
+    }
+
+    private String errorMessage(JsonNode error) {
+        if (error == null) {
+            return "Python worker returned an error";
+        }
+        if (error.isObject() && error.hasNonNull("message")) {
+            return error.get("message").asText();
+        }
+        return error.asText("Python worker returned an error");
     }
 
     private String safeError(Throwable error) {
@@ -588,16 +608,12 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private static final class WorkerState {
         private final long accountId;
+        private final AtomicLong inputIds = new AtomicLong();
+        private final Map<String, PendingReply> pendingReplies = new ConcurrentHashMap<>();
+        private final ArrayDeque<String> recentLogs = new ArrayDeque<>();
         private volatile TelegramAccountConfig config;
-        private volatile Process process;
-        private volatile BufferedWriter writer;
-        private volatile Thread stdoutReader;
-        private volatile Thread stderrReader;
-        private volatile Thread exitWatcher;
+        private volatile TelegramSession session;
         private volatile boolean stopping;
-        private volatile CountDownLatch workerReady = new CountDownLatch(1);
-        private final AtomicReference<CountDownLatch> statusResponse = new AtomicReference<>();
-        private final ArrayDeque<String> recentStderr = new ArrayDeque<>();
         private volatile AuthorizationState authorizationState = AuthorizationState.LOGGED_OUT;
         private volatile Long activeProxyId;
         private volatile String errorMessage;
@@ -610,49 +626,27 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
             return new TelegramConnectionStatus(accountId, authorizationState, activeProxyId, errorMessage);
         }
 
-        private void resetWorkerReady() {
-            workerReady = new CountDownLatch(1);
-        }
-
-        private void markWorkerReady() {
-            workerReady.countDown();
-        }
-
-        private void beginStatusResponse() {
-            statusResponse.set(new CountDownLatch(1));
-        }
-
-        private void completeStatusResponse(TelegramConnectionStatus status) {
-            var latch = statusResponse.get();
-            if (latch != null) {
-                latch.countDown();
-            }
-        }
-
-        private TelegramConnectionStatus awaitStatusResponse(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
-            var latch = statusResponse.get();
-            if (latch == null || latch.await(timeout, unit)) {
-                return status();
-            }
-            throw new TimeoutException();
-        }
-
-        private void clearStatusResponse() {
-            statusResponse.set(null);
-        }
-
-        private synchronized void rememberStderr(String line) {
+        private synchronized void rememberLog(String line) {
             if (line == null || line.isBlank()) {
                 return;
             }
-            recentStderr.addLast(line);
-            while (recentStderr.size() > 8) {
-                recentStderr.removeFirst();
+            recentLogs.addLast(line);
+            while (recentLogs.size() > 8) {
+                recentLogs.removeFirst();
             }
         }
+    }
 
-        private synchronized String recentStderr() {
-            return String.join(" | ", recentStderr);
+    private static final class PendingReply {
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private volatile TelegramConnectionStatus status;
+
+        private boolean await(long timeout, TimeUnit unit) throws InterruptedException {
+            return latch.await(timeout, unit);
+        }
+
+        private void complete() {
+            latch.countDown();
         }
     }
 }

@@ -58,47 +58,237 @@ data/telegram-client/
 All worker code extracted from the jar and all Telegram session files stay
 under `telegram.client.data-dir`.
 
-Runtime behavior:
+## Session boundary
 
-- `start` launches or restarts the account worker and sends a JSON command.
+The low-level Java/Python process boundary is represented by `TelegramSession`.
+It is intentionally not a Telegram business object. It only owns:
+
+- starting the Python process with runtime configuration such as executable,
+  worker script, working directory, environment, timeout, data directory, and
+  proxy chain;
+- writing JSON Lines input strings to Python stdin;
+- publishing Python output as raw JSON strings through
+  `java.util.concurrent.Flow.Publisher<String>`;
+- stopping the Python process;
+- reporting process lifecycle status through `SessionStatus`.
+
+`SessionStatus` describes the Python subprocess lifecycle only. Telegram
+business states such as `WAIT_CODE`, `READY`, and `LOGGED_OUT` remain business
+payload values interpreted by the adapter above `TelegramSession`.
+
+`start(config)` accepts runtime configuration needed for Python to run and reach
+Telegram, including proxies. Business values such as verification codes,
+passwords, chat ids, and unread-message fetch parameters are sent later through
+`send(String str)` as protocol inputs.
+
+## JSON Lines envelope protocol
+
+Java and Python communicate with one UTF-8 JSON object per line. Every input and
+published output uses the same envelope shape:
+
+```json
+{
+  "id": "java-1",
+  "type": "input",
+  "content": {}
+}
+```
+
+Envelope fields:
+
+- `id`: unique id for this envelope.
+- `type`: protocol type.
+- `content`: string or object payload.
+- `replyInputId`: optional output field that identifies the Java input that
+  directly triggered this output.
+
+Java to Python currently supports:
+
+- `input`
+
+Python to Java currently supports:
+
+- `reply`
+- `log`
+- `message`
+
+Additional output types may be added later without changing the envelope shape.
+
+### Input command
+
+Business commands are carried inside `content`:
+
+```json
+{
+  "id": "java-1",
+  "type": "input",
+  "content": {
+    "command": "start",
+    "accountId": 1,
+    "apiId": 123456,
+    "apiHash": "...",
+    "dataDir": "data/telegram-client/accounts/1",
+    "phoneNumber": "+8613800000000"
+  }
+}
+```
+
+Other command names include `submit_phone`, `submit_code`, `submit_password`,
+`scan`, `fetch_unread`, and `stop`.
+
+### Reply output
+
+A command completion is always a `reply` with `replyInputId` equal to the input
+id:
+
+```json
+{
+  "id": "py-reply-1",
+  "type": "reply",
+  "replyInputId": "java-1",
+  "content": {
+    "ok": true,
+    "result": {
+      "status": {
+        "accountId": 1,
+        "state": "READY",
+        "activeProxyId": 10
+      }
+    }
+  }
+}
+```
+
+Errors are also replies:
+
+```json
+{
+  "id": "py-reply-2",
+  "type": "reply",
+  "replyInputId": "java-2",
+  "content": {
+    "ok": false,
+    "error": {
+      "code": "worker_error",
+      "message": "proxy connect failed"
+    }
+  }
+}
+```
+
+### Log output
+
+Diagnostic output is published as `log` envelope JSON instead of plain stdout
+text:
+
+```json
+{
+  "id": "py-log-1",
+  "type": "log",
+  "content": {
+    "level": "INFO",
+    "message": "Telegram message handler registered",
+    "time": "2026-06-19T12:00:00Z"
+  }
+}
+```
+
+The Java subprocess wrapper still drains stderr so the process cannot block. If
+stderr contains data, Java wraps the sanitized text as a `type=log` envelope
+before publishing it.
+
+### Real-time message output
+
+Real-time Telegram updates are `message` envelopes without `replyInputId`:
+
+```json
+{
+  "id": "py-msg-1",
+  "type": "message",
+  "content": {
+    "accountId": 1,
+    "chatId": 100,
+    "chatTitle": "chat",
+    "chatType": "telegram",
+    "senderId": 200,
+    "senderName": "sender",
+    "senderUsername": "sender",
+    "receivedAt": "2026-06-19T12:00:00Z",
+    "text": "message"
+  }
+}
+```
+
+### Command-scoped message output
+
+A command that fetches unread messages emits each fetched message as a
+`message` envelope with `replyInputId`, then emits a final `reply` with the same
+`replyInputId` to mark the command complete:
+
+```json
+{
+  "id": "java-fetch-1",
+  "type": "input",
+  "content": {
+    "command": "fetch_unread",
+    "chatId": 100,
+    "limit": 50
+  }
+}
+```
+
+```json
+{
+  "id": "py-msg-2",
+  "type": "message",
+  "replyInputId": "java-fetch-1",
+  "content": {
+    "accountId": 1,
+    "chatId": 100,
+    "messageId": 9001,
+    "receivedAt": "2026-06-19T12:01:00Z",
+    "text": "unread message"
+  }
+}
+```
+
+```json
+{
+  "id": "py-reply-3",
+  "type": "reply",
+  "replyInputId": "java-fetch-1",
+  "content": {
+    "ok": true,
+    "result": {
+      "count": 1,
+      "hasMore": false
+    }
+  }
+}
+```
+
+## Runtime behavior
+
+- `start` launches or restarts the account worker, starts the Python session,
+  and sends an envelope input command.
 - The worker reuses an existing account session when one is present.
 - If no session exists, the worker enters `WAIT_PHONE` or sends a Telegram code
   and enters `WAIT_CODE`.
 - `submitPhone`, `submitCode`, and `submitPassword` drive the real Telegram
-  authorization flow.
+  authorization flow through input envelopes.
 - When authorization reaches `READY`, the worker listens for new Telegram
-  messages and emits message events to Java.
-- `stop` sends `stop`, closes stdin, and destroys the process.
-- `updateProxies` restarts the account worker so the new startup proxy is used.
+  messages and emits `message` envelopes.
+- `stop` sends a stop input, then closes stdin and destroys the process if
+  needed.
+- `updateProxies` restarts the account worker so the new runtime proxy chain is
+  used.
 - SOCKS5 and HTTP proxies are supported. HTTPS proxy entries return a clear
   configuration error until Pyrogram support is verified.
 
-Java to Python commands are written to stdin as JSON Lines:
+Sensitive values must not appear in stdout, stderr, status errors, reply errors,
+log envelopes, or Java logs:
 
-```json
-{"type":"start","accountId":1,"apiId":123456,"apiHash":"...","dataDir":"data/telegram-client/accounts/1","proxies":[]}
-{"type":"submit_phone","accountId":1,"phoneNumber":"+8613800000000"}
-{"type":"submit_code","accountId":1,"code":"12345"}
-{"type":"submit_password","accountId":1,"password":"secret"}
-{"type":"scan","accountId":1}
-{"type":"stop","accountId":1}
-```
-
-Python to Java events are written to stdout as JSON Lines:
-
-```json
-{"type":"status","accountId":1,"state":"WAIT_CODE"}
-{"type":"status","accountId":1,"state":"READY","activeProxyId":10}
-{"type":"message","accountId":1,"chatId":100,"chatTitle":"chat","chatType":"telegram","senderId":200,"senderName":"sender","senderUsername":"sender","receivedAt":"2026-06-18T12:00:00Z","text":"message"}
-{"type":"error","accountId":1,"message":"proxy connect failed"}
-```
-
-The worker should write diagnostics to stderr. Stdout is reserved for protocol
-events so Java can parse it reliably.
-
-Sensitive values must not appear in stdout, stderr, status errors, or Java logs:
-
-- Telegram message text, except inside `message` protocol events.
+- Telegram message text, except inside `message` protocol envelopes.
 - Telegram verification codes.
 - Two-step verification passwords.
 - Proxy passwords.
