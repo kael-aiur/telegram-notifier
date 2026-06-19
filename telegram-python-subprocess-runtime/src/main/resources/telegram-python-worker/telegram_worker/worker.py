@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram_worker.messages import normalize_message
-from telegram_worker.protocol import emit_error, emit_message, emit_status, log, read_commands
+from telegram_worker.protocol import emit_error, emit_message, emit_status, emit_worker_state, log, read_commands
 from telegram_worker.proxy import ProxyConfigurationError, select_proxy
 from telegram_worker.security import safe_exception
 
@@ -26,6 +26,7 @@ class TelegramWorker:
 
     def run(self):
         try:
+            emit_worker_state("read")
             while True:
                 try:
                     for command in read_commands():

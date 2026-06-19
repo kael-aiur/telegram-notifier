@@ -18,9 +18,14 @@ def emit(event):
     sys.stdout.flush()
 
 
+def emit_worker_state(state):
+    emit({"worker_state": state})
+
+
 def emit_status(account_id, state, active_proxy_id=None, error_message=None):
     event = {
         "type": "status",
+        "worker_state": str(state or "").lower(),
         "accountId": account_id,
         "state": state,
     }

@@ -34,10 +34,12 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
     @Test
     void extractsBundledWorkerResources() throws Exception {
         var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
-        var manager = manager(dataDir, null, null, List.of());
+        var manager = manager(dataDir, null, null, List.of("definitely_missing_module_for_telegram_notifier"));
 
-        manager.start(config());
+        var status = manager.start(config());
 
+        assertThat(status.authorizationState()).isEqualTo(AuthorizationState.ERROR);
+        assertThat(status.errorMessage()).contains("Missing Python modules");
         assertThat(dataDir.resolve("runtime/python-worker/main.py")).isRegularFile();
         assertThat(dataDir.resolve("runtime/python-worker/telegram_worker/security.py")).isRegularFile();
         assertThat(dataDir.resolve("runtime/python-worker/telegram_worker/proxy.py")).isRegularFile();
@@ -54,6 +56,7 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                 import json
                 import sys
 
+                print(json.dumps({"worker_state":"read"}), flush=True)
                 for line in sys.stdin:
                     command = json.loads(line)
                     account_id = command.get("accountId", 0)
@@ -100,6 +103,7 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                 import json
                 import sys
 
+                print(json.dumps({"worker_state":"read"}), flush=True)
                 for line in sys.stdin:
                     command = json.loads(line)
                     if command["type"] == "start":
@@ -114,6 +118,37 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         manager.start(config());
         await(() -> statuses.contains(AuthorizationState.WAIT_CODE));
 
+        manager.close();
+    }
+
+    @Test
+    void startReturnsStatusProducedByWorkerInsteadOfOptimisticPreviousStatus() throws Exception {
+        var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
+        var workerDir = Files.createDirectories(dataDir.resolve("fake-worker-delayed"));
+        var script = workerDir.resolve("worker.py");
+        Files.writeString(script, """
+                import json
+                import sys
+                import time
+
+                print(json.dumps({"worker_state":"read"}), flush=True)
+                for line in sys.stdin:
+                    command = json.loads(line)
+                    if command["type"] == "start":
+                        time.sleep(0.25)
+                        print(json.dumps({"type":"status","accountId":command.get("accountId", 0),"state":"WAIT_CODE"}), flush=True)
+                    elif command["type"] == "stop":
+                        print(json.dumps({"type":"status","accountId":command.get("accountId", 0),"state":"LOGGED_OUT"}), flush=True)
+                        break
+                """);
+        var manager = manager(dataDir, script, workerDir, List.of());
+
+        var startedAt = System.nanoTime();
+        var status = manager.start(config());
+        var elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+        assertThat(status.authorizationState()).isEqualTo(AuthorizationState.WAIT_CODE);
+        assertThat(elapsedMillis).isGreaterThanOrEqualTo(200);
         manager.close();
     }
 
