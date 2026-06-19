@@ -61,7 +61,7 @@ RUN apt-get update && \
 # Install Python dependencies
 COPY telegram-python-subprocess-runtime/src/main/resources/telegram-python-worker /opt/telegram-worker
 WORKDIR /opt/telegram-worker
-RUN pip3 install --no-cache-dir --break-system-packages pyrogram
+RUN pip3 install --no-cache-dir pyrogram
 
 # Copy Spring Boot application (with frontend static resources included)
 COPY --from=backend-builder /app/telegram-notifier-control-server/target/telegram-notifier-control-server-*.jar /app/app.jar
