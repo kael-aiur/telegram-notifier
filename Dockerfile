@@ -78,11 +78,11 @@ ENV TELEGRAM_PYTHON_EXECUTABLE=python3
 ENV JAVA_OPTS=""
 
 # Expose HTTP port
-EXPOSE 8080
+EXPOSE 21192
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/api/system/bootstrap-status || exit 1
+    CMD curl -f http://localhost:21192/api/system/bootstrap-status || exit 1
 
 # Volume for persistent data (SQLite database, Telegram sessions)
 VOLUME /telegram-notifier/data

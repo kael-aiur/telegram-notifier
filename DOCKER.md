@@ -30,7 +30,7 @@ docker pull kael2018/telegram-notifier:latest
 # 运行容器
 docker run -d \
   --name telegram-notifier \
-  -p 8080:8080 \
+  -p 21192:21192 \
   -v telegram-notifier-data:/telegram-notifier/data \
   -e TELEGRAM_API_ID=your_api_id \
   -e TELEGRAM_API_HASH=your_api_hash \
@@ -46,7 +46,7 @@ docker build -t telegram-notifier .
 # 运行
 docker run -d \
   --name telegram-notifier \
-  -p 8080:8080 \
+  -p 21192:21192 \
   -v telegram-notifier-data:/telegram-notifier/data \
   -e TELEGRAM_API_ID=your_api_id \
   -e TELEGRAM_API_HASH=your_api_hash \
@@ -82,10 +82,10 @@ docker run -d \
 
 ## 端口
 
-默认暴露 `8080` 端口。启动后访问：
+默认暴露 `21192` 端口。启动后访问：
 
 ```
-http://localhost:8080
+http://localhost:21192
 ```
 
 ## 健康检查
@@ -94,7 +94,7 @@ http://localhost:8080
 
 ```bash
 # 手动检查
-curl http://localhost:8080/api/system/bootstrap-status
+curl http://localhost:21192/api/system/bootstrap-status
 
 # 查看容器健康状态
 docker inspect --format='{{.State.Health.Status}}' telegram-notifier
@@ -131,7 +131,7 @@ docker logs telegram-notifier
 
 # 常见原因：
 # 1. TELEGRAM_API_ID 或 TELEGRAM_API_HASH 未设置
-# 2. 端口 8080 被占用
+# 2. 端口 21192 被占用
 # 3. 数据目录权限问题
 ```
 
