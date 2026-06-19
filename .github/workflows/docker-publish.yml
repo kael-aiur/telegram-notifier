@@ -19,6 +19,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: telegram-notifier-control-web/src/main/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: telegram-notifier-control-web/src/main/frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: telegram-notifier-control-web/src/main/frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: telegram-notifier-control-web/src/main/frontend
+        run: npm run build
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:

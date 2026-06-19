@@ -1,10 +1,21 @@
 # telegram-notifier Dockerfile
-# Multi-stage build for Java 21 + Python 3 Telegram notification service
+# Multi-stage build: Vue SPA → Maven Build → Runtime
 
 # ============================================================
-# Stage 1: Maven Build
+# Stage 1: Build Vue Frontend
 # ============================================================
-FROM maven:3.9-eclipse-temurin-21 AS builder
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /app
+COPY telegram-notifier-control-web/src/main/frontend/package*.json telegram-notifier-control-web/src/main/frontend/
+RUN cd telegram-notifier-control-web/src/main/frontend && npm ci
+COPY telegram-notifier-control-web/src/main/frontend telegram-notifier-control-web/src/main/frontend
+RUN cd telegram-notifier-control-web/src/main/frontend && npm run build
+
+# ============================================================
+# Stage 2: Maven Build
+# ============================================================
+FROM maven:3.9-eclipse-temurin-21 AS backend-builder
 
 WORKDIR /app
 COPY pom.xml .
@@ -24,11 +35,14 @@ COPY telegram-python-subprocess-runtime telegram-python-subprocess-runtime
 COPY telegram-notifier-control-server telegram-notifier-control-server
 COPY telegram-notifier-control-web telegram-notifier-control-web
 
+# Copy frontend build output into control-server static resources
+COPY --from=frontend-builder /app/telegram-notifier-control-server/src/main/resources/static telegram-notifier-control-server/src/main/resources/static
+
 # Build application (skip tests for Docker build)
 RUN mvn clean package -DskipTests -B
 
 # ============================================================
-# Stage 2: Runtime
+# Stage 3: Runtime
 # ============================================================
 FROM eclipse-temurin:21-jre-jammy
 
@@ -49,8 +63,8 @@ COPY telegram-python-subprocess-runtime/src/main/resources/telegram-python-worke
 WORKDIR /opt/telegram-worker
 RUN pip3 install --no-cache-dir --break-system-packages pyrogram
 
-# Copy Spring Boot application
-COPY --from=builder /app/telegram-notifier-control-server/target/telegram-notifier-control-server-*.jar /app/app.jar
+# Copy Spring Boot application (with frontend static resources included)
+COPY --from=backend-builder /app/telegram-notifier-control-server/target/telegram-notifier-control-server-*.jar /app/app.jar
 
 # Create data directory
 RUN mkdir -p /telegram-notifier/data
