@@ -17,7 +17,11 @@ public interface TelegramAccountSessionManager {
 
     void updateProxies(long accountId, List<ProxyConfig> proxies);
 
-    void scan(long accountId);
+    default void scan(long accountId) {
+        scan(new TelegramScanRequest(accountId, List.of()));
+    }
+
+    void scan(TelegramScanRequest request);
 
     void subscribe(TelegramMessageListener listener);
 

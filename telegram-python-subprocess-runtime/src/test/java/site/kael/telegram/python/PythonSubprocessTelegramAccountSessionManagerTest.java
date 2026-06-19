@@ -8,6 +8,7 @@ import site.kael.telegram.starter.ProxyProtocol;
 import site.kael.telegram.starter.TelegramAccountConfig;
 import site.kael.telegram.starter.TelegramClientProperties;
 import site.kael.telegram.starter.TelegramMessageEvent;
+import site.kael.telegram.starter.TelegramScanRequest;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -115,6 +116,7 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         manager.submitCode(1L, "12345");
         await(() -> manager.status(1L).authorizationState() == AuthorizationState.ERROR);
 
+        assertThat(messages.getFirst().messageId()).isEqualTo(30L);
         assertThat(messages.getFirst().text()).isEqualTo("hello");
         assertThat(manager.status(1L).errorMessage()).doesNotContain("secret");
         assertThat(manager.status(1L).errorMessage()).contains("******");
@@ -215,6 +217,46 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
     }
 
     @Test
+    void sendsScanChatIdsAndParsesCommandScopedMessages() throws Exception {
+        var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
+        var workerDir = Files.createDirectories(dataDir.resolve("fake-worker-scan"));
+        var script = workerDir.resolve("worker.py");
+        Files.writeString(script, """
+                import json
+                import sys
+
+                def reply(input_id, account_id, state):
+                    print(json.dumps({"id":"py-reply-" + input_id,"type":"reply","replyInputId":input_id,"content":{"ok":True,"result":{"status":{"accountId":account_id,"state":state}}}}), flush=True)
+
+                for line in sys.stdin:
+                    envelope = json.loads(line)
+                    command = envelope["content"]
+                    account_id = command.get("accountId", 0)
+                    if command["command"] == "start":
+                        reply(envelope["id"], account_id, "READY")
+                    elif command["command"] == "scan":
+                        chat_ids = command.get("chatIds", [])
+                        if 10 in chat_ids:
+                            print(json.dumps({"id":"py-msg-scan","type":"message","replyInputId":envelope["id"],"content":{"accountId":account_id,"chatId":10,"messageId":99,"chatTitle":"Ops","chatType":"group","senderId":20,"senderName":"Ada","senderUsername":"ada","receivedAt":"2026-06-19T01:02:03Z","text":"hello"}}), flush=True)
+                        print(json.dumps({"id":"py-reply-scan","type":"reply","replyInputId":envelope["id"],"content":{"ok":True,"result":{"scanned":1,"unread":1,"emitted":1}}}), flush=True)
+                    elif command["command"] == "stop":
+                        reply(envelope["id"], account_id, "LOGGED_OUT")
+                        break
+                """);
+        var manager = manager(dataDir, script, workerDir, List.of());
+        var messages = new CopyOnWriteArrayList<TelegramMessageEvent>();
+        manager.subscribe(messages::add);
+
+        manager.start(config());
+        manager.scan(new TelegramScanRequest(1L, List.of(10L), 5));
+        await(() -> !messages.isEmpty());
+
+        assertThat(messages.getFirst().chatId()).isEqualTo(10L);
+        assertThat(messages.getFirst().messageId()).isEqualTo(99L);
+        manager.close();
+    }
+
+    @Test
     void reportsWorkerProcessExitInsteadOfKeepingOptimisticWaitCode() throws Exception {
         var dataDir = Files.createTempDirectory("telegram-python-runtime-test");
         var workerDir = Files.createDirectories(dataDir.resolve("fake-worker-exit"));
@@ -246,7 +288,7 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
                     account_id = command.get("accountId", 0)
                     if command["command"] == "start":
                         reply(envelope["id"], account_id, "READY", 9)
-                        print(json.dumps({"id":"py-msg-1","type":"message","content":{"accountId":account_id,"chatId":10,"chatTitle":"Ops","chatType":"group","senderId":20,"senderName":"Ada","senderUsername":"ada","receivedAt":"2026-06-19T01:02:03Z","text":"hello"}}), flush=True)
+                        print(json.dumps({"id":"py-msg-1","type":"message","content":{"accountId":account_id,"chatId":10,"messageId":30,"chatTitle":"Ops","chatType":"group","senderId":20,"senderName":"Ada","senderUsername":"ada","receivedAt":"2026-06-19T01:02:03Z","text":"hello"}}), flush=True)
                     elif command["command"] == "submit_code":
                         print(json.dumps({"id":"py-reply-error","type":"reply","replyInputId":envelope["id"],"content":{"ok":False,"error":{"message":"proxy password=secret failed"}}}), flush=True)
                     elif command["command"] == "stop":

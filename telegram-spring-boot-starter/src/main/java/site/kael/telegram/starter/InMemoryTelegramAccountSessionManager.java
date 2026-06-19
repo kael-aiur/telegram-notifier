@@ -70,13 +70,15 @@ public class InMemoryTelegramAccountSessionManager implements TelegramAccountSes
     }
 
     @Override
-    public void scan(long accountId) {
-        var state = sessions.get(accountId);
-        if (state == null || state.authorizationState != AuthorizationState.READY) {
+    public void scan(TelegramScanRequest request) {
+        var state = sessions.get(request.accountId());
+        if (state == null || state.authorizationState != AuthorizationState.READY || request.chatIds().isEmpty()) {
             return;
         }
-        publishTestMessage(new TelegramMessageEvent(accountId, 0L, "scan", "system", 0L, "scanner", "scanner",
-                java.time.Instant.now(), ""));
+        for (Long chatId : request.chatIds()) {
+            publishTestMessage(new TelegramMessageEvent(request.accountId(), chatId == null ? 0L : chatId, 1L,
+                    "scan", "system", 0L, "scanner", "scanner", java.time.Instant.now(), ""));
+        }
     }
 
     @Override

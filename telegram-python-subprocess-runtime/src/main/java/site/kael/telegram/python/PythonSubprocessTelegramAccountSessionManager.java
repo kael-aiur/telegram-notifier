@@ -11,6 +11,7 @@ import site.kael.telegram.starter.TelegramConnectionStatus;
 import site.kael.telegram.starter.TelegramConnectionStatusListener;
 import site.kael.telegram.starter.TelegramMessageEvent;
 import site.kael.telegram.starter.TelegramMessageListener;
+import site.kael.telegram.starter.TelegramScanRequest;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,6 +40,7 @@ import java.util.logging.Logger;
 public class PythonSubprocessTelegramAccountSessionManager implements TelegramAccountSessionManager, AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger(PythonSubprocessTelegramAccountSessionManager.class.getName());
     private static final long COMMAND_RESPONSE_TIMEOUT_SECONDS = 120;
+    private static final DateTimeFormatter LOG_TIME_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
     private final TelegramClientProperties clientProperties;
     private final PythonTelegramRuntimeProperties runtimeProperties;
@@ -146,9 +150,13 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     }
 
     @Override
-    public void scan(long accountId) {
-        var state = workers.computeIfAbsent(accountId, WorkerState::new);
-        sendCommand(state, "scan", Map.of("accountId", accountId));
+    public void scan(TelegramScanRequest request) {
+        var state = workers.computeIfAbsent(request.accountId(), WorkerState::new);
+        sendCommand(state, "scan", Map.of(
+                "accountId", request.accountId(),
+                "chatIds", request.chatIds(),
+                "maxMessagesPerChat", request.maxMessagesPerChat()
+        ));
     }
 
     @Override
@@ -450,14 +458,14 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private void handleMessage(WorkerState state, JsonNode payload) {
         if (payload.hasNonNull("replyInputId")) {
-            LOGGER.info("telegram python worker " + state.accountId + " received command-scoped message for "
+            LOGGER.fine("telegram python worker " + state.accountId + " received command-scoped message for "
                     + payload.get("replyInputId").asText());
-            return;
         }
         var content = payload.has("content") ? payload.get("content") : payload;
         var event = new TelegramMessageEvent(
                 state.accountId,
                 longValue(content, "chatId"),
+                longValue(content, "messageId"),
                 text(content, "chatTitle"),
                 text(content, "chatType"),
                 longValue(content, "senderId"),
@@ -471,7 +479,7 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
                 + ", chatType=" + event.chatType()
                 + ", senderId=" + event.senderId()
                 + ", senderUsername=" + nullToEmpty(event.senderUsername())
-                + ", receivedAt=" + event.receivedAt());
+                + ", receivedAt=" + LOG_TIME_FORMATTER.format(event.receivedAt()));
         publishTestMessage(event);
     }
 

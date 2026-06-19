@@ -56,7 +56,7 @@ class TelegramWorker:
             elif command_type == "submit_password":
                 self.submit_password(command.get("password") or "")
             elif command_type == "scan":
-                self.emit_status(self.state.authorization_state)
+                self.scan(command)
             elif command_type == "fetch_unread":
                 self.fetch_unread(command)
             elif command_type == "stop":
@@ -136,14 +136,40 @@ class TelegramWorker:
         except self._bad_password_errors() as exc:
             self.emit_status("WAIT_PASSWORD", safe_exception(exc, [password, *self._secrets()]))
 
+    def scan(self, command):
+        self._require_client()
+        chat_ids = _chat_ids(command.get("chatIds") or [])
+        scanned = 0
+        unread = 0
+        emitted = 0
+        target_ids = set(chat_ids)
+        try:
+            for dialog in self.state.client.get_dialogs():
+                chat = getattr(dialog, "chat", None)
+                chat_id = int(getattr(chat, "id", 0) or 0)
+                if chat_id not in target_ids:
+                    continue
+                scanned += 1
+                unread_count = int(getattr(dialog, "unread_messages_count", 0) or 0)
+                log("scan dialog: chatId=%s unreadCount=%s" % (chat_id, unread_count))
+                if unread_count <= 0:
+                    continue
+                unread += unread_count
+                for message in self.state.client.get_chat_history(chat_id, limit=1):
+                    emit_message(normalize_message(self.state.account_id, message), reply_input_id=self.current_input_id)
+                    emitted += 1
+                    break
+        except Exception as exc:
+            log("Failed to scan Telegram dialogs: " + safe_exception(exc, self._secrets()))
+        emit_reply(self.current_input_id, True, result={"scanned": scanned, "unread": unread, "emitted": emitted})
+
     def fetch_unread(self, command):
         self._require_client()
         emit_reply(self.current_input_id, True, result={"count": 0, "hasMore": False})
 
     def ready(self):
-        self._register_message_handler()
         self._initialize_client()
-        log("Telegram message handler registered and update dispatcher initialized")
+        log("Telegram worker ready for command-driven unread scans")
         self.emit_status("READY")
 
     def stop(self):
@@ -258,6 +284,26 @@ def _runtime_config():
         return value if isinstance(value, dict) else {}
     except Exception:
         return {}
+
+
+def _chat_ids(value):
+    if not isinstance(value, list):
+        return []
+    output = []
+    for item in value:
+        try:
+            output.append(int(item))
+        except Exception:
+            continue
+    return output
+
+
+def _positive_int(value, default):
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except Exception:
+        return default
 
 
 def _sent_code_summary(sent_code):

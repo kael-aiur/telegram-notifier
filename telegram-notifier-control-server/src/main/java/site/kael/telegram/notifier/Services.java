@@ -1,5 +1,7 @@
 package site.kael.telegram.notifier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -30,6 +32,8 @@ import java.util.Optional;
 
 @Service
 class AdminService {
+
+    private static final Logger log = LoggerFactory.getLogger(AdminService.class);
     private final JdbcTemplate jdbc;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
@@ -82,9 +86,11 @@ class TelegramAccountService {
     }
 
     TelegramAccount get(long id) {
-        return jdbc.query("select * from telegram_accounts where id = ?", mapper(), id).stream()
-                .findFirst()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "account not found"));
+        return find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "account not found"));
+    }
+
+    Optional<TelegramAccount> find(long id) {
+        return jdbc.query("select * from telegram_accounts where id = ?", mapper(), id).stream().findFirst();
     }
 
     TelegramAccount create(TelegramAccountRequest request) {
@@ -403,19 +409,59 @@ class PushChannelService {
 }
 
 @Service
+class NotifiedTelegramMessageService {
+    private final JdbcTemplate jdbc;
+
+    NotifiedTelegramMessageService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    boolean isNotified(TelegramMessageEvent event) {
+        if (!hasMessageIdentity(event)) {
+            return false;
+        }
+        Integer count = jdbc.queryForObject("""
+                select count(*) from notified_telegram_messages
+                where account_id = ? and chat_id = ? and message_id = ?
+                """, Integer.class, event.accountId(), event.chatId(), event.messageId());
+        return count != null && count > 0;
+    }
+
+    void remember(TelegramMessageEvent event) {
+        if (!hasMessageIdentity(event)) {
+            return;
+        }
+        jdbc.update("""
+                insert or ignore into notified_telegram_messages(account_id, chat_id, message_id, notified_at)
+                values(?,?,?,?)
+                """, event.accountId(), event.chatId(), event.messageId(), Instant.now().toString());
+    }
+
+    private boolean hasMessageIdentity(TelegramMessageEvent event) {
+        return event.messageId() > 0;
+    }
+}
+
+@Service
 class NotificationRuleService {
+    private static final Logger log = LoggerFactory.getLogger(NotificationRuleService.class);
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
     private final JdbcTemplate jdbc;
     private final JsonSupport json;
     private final PushChannelService channels;
     private final StatisticsService statistics;
+    private final TelegramAccountService accounts;
+    private final NotifiedTelegramMessageService notifiedMessages;
 
     NotificationRuleService(JdbcTemplate jdbc, JsonSupport json, PushChannelService channels, StatisticsService statistics,
+                            TelegramAccountService accounts, NotifiedTelegramMessageService notifiedMessages,
                             TelegramAccountSessionManager sessions) {
         this.jdbc = jdbc;
         this.json = json;
         this.channels = channels;
         this.statistics = statistics;
+        this.accounts = accounts;
+        this.notifiedMessages = notifiedMessages;
         sessions.subscribe(this::handle);
     }
 
@@ -458,15 +504,38 @@ class NotificationRuleService {
     }
 
     void handle(TelegramMessageEvent event) {
+        if (event.messageId() > 0) {
+            if (notifiedMessages.isNotified(event) || !isOldEnough(event)) {
+                return;
+            }
+        }
+        var matched = false;
         statistics.incrementMessages(event.accountId());
-        list().stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).forEach(rule -> {
+        for (NotificationRule rule : list().stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
+            matched = true;
             statistics.incrementRuleHit(rule.id());
             var content = render(rule, event);
             for (Long channelId : rule.channelIds()) {
-                var result = channels.send(channels.get(channelId), content);
+                PushChannel channel;
+                try {
+                    channel = channels.get(channelId);
+                } catch (Exception e) {
+                    log.warn("channel not found by id: {} for rule {}(id: {})", channelId, rule.name(), rule.id());
+                    continue;
+                }
+                var result = channels.send(channel, content);
                 statistics.recordDelivery(rule.id(), channelId, result.success(), result.message());
             }
-        });
+        }
+        if (matched) {
+            notifiedMessages.remember(event);
+        }
+    }
+
+    private boolean isOldEnough(TelegramMessageEvent event) {
+        return accounts.find(event.accountId())
+                .map(account -> !event.receivedAt().isAfter(Instant.now().minusSeconds(account.unreadAgeThresholdSeconds())))
+                .orElse(false);
     }
 
     boolean matches(Map<String, Object> condition, TelegramMessageEvent event) {
@@ -501,6 +570,7 @@ class NotificationRuleService {
         values.put("receivedAt", FORMATTER.format(event.receivedAt()));
         values.put("accountId", String.valueOf(event.accountId()));
         values.put("chatId", String.valueOf(event.chatId()));
+        values.put("messageId", String.valueOf(event.messageId()));
         values.put("chatTitle", nullToEmpty(event.chatTitle()));
         values.put("chatType", nullToEmpty(event.chatType()));
         values.put("senderId", String.valueOf(event.senderId()));
@@ -519,6 +589,7 @@ class NotificationRuleService {
         return switch (field) {
             case "accountId" -> String.valueOf(event.accountId());
             case "chatId" -> String.valueOf(event.chatId());
+            case "messageId" -> String.valueOf(event.messageId());
             case "chatTitle" -> nullToEmpty(event.chatTitle());
             case "chatType" -> nullToEmpty(event.chatType());
             case "senderId" -> String.valueOf(event.senderId());
