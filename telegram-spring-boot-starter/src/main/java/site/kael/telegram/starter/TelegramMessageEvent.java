@@ -5,6 +5,7 @@ import java.time.Instant;
 public record TelegramMessageEvent(
         long accountId,
         long chatId,
+        long messageId,
         String chatTitle,
         String chatType,
         long senderId,

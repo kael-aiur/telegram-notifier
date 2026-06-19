@@ -23,7 +23,7 @@ class InMemoryTelegramAccountSessionManagerTest {
 
         var received = new AtomicReference<TelegramMessageEvent>();
         manager.subscribe(received::set);
-        var event = new TelegramMessageEvent(1L, 2L, "server", "channel", 3L, "sender", "sender",
+        var event = new TelegramMessageEvent(1L, 2L, 4L, "server", "channel", 3L, "sender", "sender",
                 java.time.Instant.now(), "secret");
         manager.publishTestMessage(event);
         assertThat(received.get()).isEqualTo(event);

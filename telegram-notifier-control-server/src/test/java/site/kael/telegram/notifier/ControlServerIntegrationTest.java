@@ -1,5 +1,6 @@
 package site.kael.telegram.notifier;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -10,6 +11,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.file.Files;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +40,21 @@ class ControlServerIntegrationTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @BeforeEach
+    void resetDatabase() {
+        jdbc.execute("delete from account_proxies");
+        jdbc.execute("delete from proxy_servers");
+        jdbc.execute("delete from notified_telegram_messages");
+        jdbc.execute("delete from delivery_stats");
+        jdbc.execute("delete from rule_stats");
+        jdbc.execute("delete from message_stats");
+        jdbc.execute("delete from notification_rules");
+        jdbc.execute("delete from push_channels");
+        jdbc.execute("delete from telegram_accounts");
+        jdbc.execute("delete from administrators");
+        jdbc.execute("delete from sqlite_sequence");
+    }
 
     @Test
     void bootstrapLoginAndProtectedApisWork() throws Exception {
@@ -156,6 +173,97 @@ class ControlServerIntegrationTest {
         var persistedBodyHits = jdbc.queryForObject("""
                 select
                     (select count(*) from notification_rules where condition_json like '%alarm secret body%' or template like '%alarm secret body%') +
+                    (select count(*) from message_stats where bucket like '%alarm secret body%') +
+                    (select count(*) from rule_stats where bucket like '%alarm secret body%') +
+                    (select count(*) from delivery_stats where last_error like '%alarm secret body%')
+                """, Integer.class);
+        assertThat(persistedBodyHits).isZero();
+    }
+
+    @Test
+    void unreadMessagesAreThresholdFilteredDeduplicatedAndDoNotPersistBody() throws Exception {
+        ensureAdmin();
+        var token = loginToken();
+        var oldMessageTime = Instant.now().minusSeconds(120).toString();
+        var recentMessageTime = Instant.now().toString();
+
+        mvc.perform(post("/api/accounts")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"displayName":"main","phoneNumber":"+100000","enabled":true,"scanFrequencySeconds":30,"unreadAgeThresholdSeconds":60}
+                                """))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/channels")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"name":"bark","type":"BARK","enabled":false,"config":{"serverUrl":"https://api.day.app","deviceKey":"device"}}
+                                """))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/rules")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"name":"chat rule","enabled":true,"sourceLabel":"Telegram","condition":{"field":"chatId","op":"equals","value":"42"},"template":"{{messageId}} {{text}}","channelIds":[1]}
+                                """))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/test/messages")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"accountId":1,"chatId":42,"messageId":100,"chatTitle":"Ops","receivedAt":"%s","text":"alarm secret body"}
+                                """.formatted(oldMessageTime)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("select count(*) from notified_telegram_messages where account_id = 1 and chat_id = 42 and message_id = 100", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select failure_count from delivery_stats where rule_id = 1 and channel_id = 1", Integer.class)).isEqualTo(1);
+
+        mvc.perform(post("/api/test/messages")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"accountId":1,"chatId":42,"messageId":100,"chatTitle":"Ops","receivedAt":"%s","text":"alarm secret body"}
+                                """.formatted(oldMessageTime)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("select failure_count from delivery_stats where rule_id = 1 and channel_id = 1", Integer.class)).isEqualTo(1);
+
+        mvc.perform(post("/api/test/messages")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"accountId":1,"chatId":42,"messageId":101,"chatTitle":"Ops","receivedAt":"%s","text":"alarm secret body"}
+                                """.formatted(recentMessageTime)))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/test/messages")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"accountId":1,"chatId":99,"messageId":102,"chatTitle":"Other","receivedAt":"%s","text":"alarm secret body"}
+                                """.formatted(oldMessageTime)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("select count(*) from notified_telegram_messages", Integer.class)).isEqualTo(1);
+
+        mvc.perform(post("/api/test/messages")
+                        .header("X-Auth-Token", token)
+                        .contentType("application/json")
+                        .content("""
+                                {"accountId":1,"chatId":42,"messageId":101,"chatTitle":"Ops","receivedAt":"%s","text":"alarm secret body"}
+                                """.formatted(oldMessageTime)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("select count(*) from notified_telegram_messages where account_id = 1 and chat_id = 42 and message_id = 101", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select failure_count from delivery_stats where rule_id = 1 and channel_id = 1", Integer.class)).isEqualTo(2);
+
+        var persistedBodyHits = jdbc.queryForObject("""
+                select
+                    (select count(*) from notified_telegram_messages where notified_at like '%alarm secret body%') +
                     (select count(*) from message_stats where bucket like '%alarm secret body%') +
                     (select count(*) from rule_stats where bucket like '%alarm secret body%') +
                     (select count(*) from delivery_stats where last_error like '%alarm secret body%')

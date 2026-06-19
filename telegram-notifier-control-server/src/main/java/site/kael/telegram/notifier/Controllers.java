@@ -306,12 +306,13 @@ class TestMessageController {
         var event = new TelegramMessageEvent(
                 longValue(body.get("accountId"), 1L),
                 longValue(body.get("chatId"), 1L),
+                longValue(body.get("messageId"), 0L),
                 stringValue(body.get("chatTitle"), "服务器"),
                 stringValue(body.get("chatType"), "private"),
                 longValue(body.get("senderId"), 1L),
                 stringValue(body.get("senderName"), "sender"),
                 stringValue(body.get("senderUsername"), "sender"),
-                Instant.now(),
+                instantValue(body.get("receivedAt")),
                 stringValue(body.get("text"), "")
         );
         sessions.publishTestMessage(event);
@@ -325,6 +326,13 @@ class TestMessageController {
             return Long.parseLong(text);
         }
         return defaultValue;
+    }
+
+    private Instant instantValue(Object value) {
+        if (value instanceof String text && !text.isBlank()) {
+            return Instant.parse(text);
+        }
+        return Instant.now();
     }
 
     private String stringValue(Object value, String defaultValue) {

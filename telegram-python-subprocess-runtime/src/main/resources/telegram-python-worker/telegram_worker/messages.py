@@ -6,8 +6,6 @@ def normalize_message(account_id, message):
     sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
     received_at = getattr(message, "date", None)
     if isinstance(received_at, datetime):
-        if received_at.tzinfo is None:
-            received_at = received_at.replace(tzinfo=timezone.utc)
         received_at = received_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     else:
         received_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -19,6 +17,7 @@ def normalize_message(account_id, message):
     return {
         "accountId": int(account_id or 0),
         "chatId": int(_field(chat, "id", 0) or 0),
+        "messageId": int(_field(message, "id", 0) or 0),
         "chatTitle": _chat_title(chat),
         "chatType": str(_field(chat, "type", "telegram") or "telegram"),
         "senderId": int(_field(sender, "id", 0) or 0),
