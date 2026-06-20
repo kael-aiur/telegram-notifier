@@ -1,4 +1,4 @@
-package site.kael.telegram.notifier;
+package site.kael.telegram.notifier.core.support;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -8,18 +8,18 @@ import java.util.List;
 import java.util.Map;
 
 @Component
-class JsonSupport {
+public class JsonSupport {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
     private static final TypeReference<List<Long>> LONG_LIST_TYPE = new TypeReference<>() {
     };
     private final ObjectMapper objectMapper;
 
-    JsonSupport(ObjectMapper objectMapper) {
+    public JsonSupport(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
-    String write(Object value) {
+    public String write(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (Exception e) {
@@ -27,7 +27,7 @@ class JsonSupport {
         }
     }
 
-    Map<String, Object> readMap(String value) {
+    public Map<String, Object> readMap(String value) {
         try {
             if (value == null || value.isBlank()) {
                 return Map.of();
@@ -38,7 +38,7 @@ class JsonSupport {
         }
     }
 
-    List<Long> readLongList(String value) {
+    public List<Long> readLongList(String value) {
         try {
             if (value == null || value.isBlank()) {
                 return List.of();

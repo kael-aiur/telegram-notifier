@@ -5,8 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -19,6 +17,9 @@ import site.kael.telegram.starter.TelegramAccountConfig;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramConnectionStatus;
 import site.kael.telegram.starter.TelegramMessageEvent;
+import site.kael.telegram.notifier.core.dao.*;
+import site.kael.telegram.notifier.core.model.*;
+import site.kael.telegram.notifier.core.support.ValidationSupport;
 
 import java.net.URI;
 import java.time.Duration;
@@ -30,56 +31,48 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 
 @Service
 class AdminService {
 
     private static final Logger log = LoggerFactory.getLogger(AdminService.class);
-    private final JdbcTemplate jdbc;
+    private final AdminDao adminDao;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
-    AdminService(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    AdminService(AdminDao adminDao) {
+        this.adminDao = adminDao;
     }
 
     boolean hasAdmin() {
-        Integer count = jdbc.queryForObject("select count(*) from administrators", Integer.class);
-        return count != null && count > 0;
+        return adminDao.count() > 0;
     }
 
     void initialize(String username, String password) {
         if (hasAdmin()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "administrator already exists");
         }
-        jdbc.update("insert into administrators(username, password_hash, created_at) values(?,?,?)",
-                requireText(username, "username"), passwordEncoder.encode(requireText(password, "password")), Instant.now().toString());
+        adminDao.insert(
+                ValidationSupport.requireText(username, "username"),
+                passwordEncoder.encode(ValidationSupport.requireText(password, "password")),
+                Instant.now().toString());
     }
 
     boolean authenticate(String username, String password) {
-        var rows = jdbc.query("select password_hash from administrators where username = ?",
-                (rs, rowNum) -> rs.getString("password_hash"), username);
-        return !rows.isEmpty() && passwordEncoder.matches(password == null ? "" : password, rows.getFirst());
-    }
-
-    private String requireText(String value, String field) {
-        if (value == null || value.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required");
-        }
-        return value.trim();
+        return adminDao.selectPasswordHashByUsername(username)
+                .map(hash -> passwordEncoder.matches(password == null ? "" : password, hash))
+                .orElse(false);
     }
 }
 
 @Service
 class TelegramAccountService {
     private static final Logger log = LoggerFactory.getLogger(TelegramAccountService.class);
-    private final JdbcTemplate jdbc;
+    private final TelegramAccountDao accountDao;
     private final ProxyService proxyService;
     private final TelegramAccountSessionManager sessions;
 
-    TelegramAccountService(JdbcTemplate jdbc, ProxyService proxyService, TelegramAccountSessionManager sessions) {
-        this.jdbc = jdbc;
+    TelegramAccountService(TelegramAccountDao accountDao, ProxyService proxyService, TelegramAccountSessionManager sessions) {
+        this.accountDao = accountDao;
         this.proxyService = proxyService;
         this.sessions = sessions;
         this.sessions.subscribeStatus(this::saveStatus);
@@ -87,8 +80,8 @@ class TelegramAccountService {
 
     @EventListener(ApplicationReadyEvent.class)
     void autoStartReadyAccounts() {
-        var readyAccounts = jdbc.query("select * from telegram_accounts where authorization_state = ? and enabled = 1",
-                mapper(), AuthorizationState.READY.name());
+        var readyAccounts = accountDao.selectByAuthorizationStateAndEnabled(
+                AuthorizationState.READY.name(), true);
         if (readyAccounts.isEmpty()) {
             return;
         }
@@ -104,47 +97,44 @@ class TelegramAccountService {
     }
 
     List<TelegramAccount> list() {
-        return jdbc.query("select * from telegram_accounts order by id", mapper());
+        return accountDao.selectAll();
     }
 
     TelegramAccount get(long id) {
-        return find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "account not found"));
+        return accountDao.selectById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "account not found"));
     }
 
-    Optional<TelegramAccount> find(long id) {
-        return jdbc.query("select * from telegram_accounts where id = ?", mapper(), id).stream().findFirst();
+    java.util.Optional<TelegramAccount> find(long id) {
+        return accountDao.selectById(id);
     }
 
     TelegramAccount create(TelegramAccountRequest request) {
         var now = Instant.now().toString();
-        jdbc.update("""
-                insert into telegram_accounts(display_name, phone_number, enabled, scan_frequency_seconds, unread_age_threshold_seconds, created_at, updated_at)
-                values(?,?,?,?,?,?,?)
-                """, requireText(request.displayName(), "displayName"), request.phoneNumber(),
-                bool(request.enabled(), true) ? 1 : 0,
-                positive(request.scanFrequencySeconds(), 60),
-                positive(request.unreadAgeThresholdSeconds(), 3600),
+        long id = accountDao.insert(
+                ValidationSupport.requireText(request.displayName(), "displayName"),
+                request.phoneNumber(),
+                ValidationSupport.bool(request.enabled(), true),
+                ValidationSupport.positive(request.scanFrequencySeconds(), 60L),
+                ValidationSupport.positive(request.unreadAgeThresholdSeconds(), 3600L),
                 now, now);
-        Long id = jdbc.queryForObject("select last_insert_rowid()", Long.class);
         return get(id);
     }
 
     TelegramAccount update(long id, TelegramAccountRequest request) {
         get(id);
-        jdbc.update("""
-                update telegram_accounts
-                set display_name = ?, phone_number = ?, enabled = ?, scan_frequency_seconds = ?, unread_age_threshold_seconds = ?, updated_at = ?
-                where id = ?
-                """, requireText(request.displayName(), "displayName"), request.phoneNumber(),
-                bool(request.enabled(), true) ? 1 : 0,
-                positive(request.scanFrequencySeconds(), 60),
-                positive(request.unreadAgeThresholdSeconds(), 3600),
-                Instant.now().toString(), id);
+        accountDao.update(id,
+                ValidationSupport.requireText(request.displayName(), "displayName"),
+                request.phoneNumber(),
+                ValidationSupport.bool(request.enabled(), true),
+                ValidationSupport.positive(request.scanFrequencySeconds(), 60L),
+                ValidationSupport.positive(request.unreadAgeThresholdSeconds(), 3600L),
+                Instant.now().toString());
         return get(id);
     }
 
     void delete(long id) {
-        jdbc.update("delete from telegram_accounts where id = ?", id);
+        accountDao.deleteById(id);
         sessions.stop(id);
     }
 
@@ -168,7 +158,7 @@ class TelegramAccountService {
     TelegramConnectionStatus submitPhone(long id, String phone) {
         var status = sessions.submitPhone(id, phone);
         saveStatus(status);
-        jdbc.update("update telegram_accounts set phone_number = ?, updated_at = ? where id = ?", phone, Instant.now().toString(), id);
+        accountDao.updatePhoneNumber(id, phone, Instant.now().toString());
         return status;
     }
 
@@ -193,8 +183,10 @@ class TelegramAccountService {
 
     TelegramAccount updateScan(long id, long frequencySeconds, long unreadAgeSeconds) {
         get(id);
-        jdbc.update("update telegram_accounts set scan_frequency_seconds = ?, unread_age_threshold_seconds = ?, updated_at = ? where id = ?",
-                positive(frequencySeconds, 60), positive(unreadAgeSeconds, 3600), Instant.now().toString(), id);
+        accountDao.updateScanSettings(id,
+                ValidationSupport.positive(frequencySeconds, 60),
+                ValidationSupport.positive(unreadAgeSeconds, 3600),
+                Instant.now().toString());
         return get(id);
     }
 
@@ -203,185 +195,127 @@ class TelegramAccountService {
     }
 
     private void saveStatus(TelegramConnectionStatus status) {
-        jdbc.update("""
-                update telegram_accounts set authorization_state = ?, active_proxy_id = ?, connection_error = ?, updated_at = ? where id = ?
-                """, status.authorizationState().name(), status.activeProxyId(), status.errorMessage(), Instant.now().toString(), status.accountId());
-    }
-
-    private RowMapper<TelegramAccount> mapper() {
-        return (rs, rowNum) -> new TelegramAccount(
-                rs.getLong("id"),
-                rs.getString("display_name"),
-                rs.getString("phone_number"),
-                rs.getInt("enabled") == 1,
-                AuthorizationState.valueOf(rs.getString("authorization_state")),
-                nullableLong(rs.getObject("active_proxy_id")),
-                rs.getString("connection_error"),
-                rs.getLong("scan_frequency_seconds"),
-                rs.getLong("unread_age_threshold_seconds"),
-                Instant.parse(rs.getString("created_at")),
-                Instant.parse(rs.getString("updated_at"))
-        );
-    }
-
-    private String requireText(String value, String field) {
-        if (value == null || value.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required");
-        return value.trim();
-    }
-
-    private boolean bool(Boolean value, boolean defaultValue) {
-        return value == null ? defaultValue : value;
-    }
-
-    private long positive(Long value, long defaultValue) {
-        var v = value == null ? defaultValue : value;
-        if (v <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "value must be positive");
-        return v;
-    }
-
-    private long positive(long value, long defaultValue) {
-        return positive(Long.valueOf(value), defaultValue);
-    }
-
-    private Long nullableLong(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
+        accountDao.updateAuthorizationState(
+                status.accountId(),
+                status.authorizationState().name(),
+                status.activeProxyId(),
+                status.errorMessage(),
+                Instant.now().toString());
     }
 }
 
 @Service
 class ProxyService {
-    private final JdbcTemplate jdbc;
+    private final ProxyDao proxyDao;
 
-    ProxyService(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    ProxyService(ProxyDao proxyDao) {
+        this.proxyDao = proxyDao;
     }
 
     List<ProxyServer> list() {
-        return jdbc.query("select * from proxy_servers order by id", mapper()).stream().map(ProxyServer::masked).toList();
+        return proxyDao.selectAllServers().stream().map(ProxyServer::masked).toList();
     }
 
     ProxyServer get(long id) {
-        return jdbc.query("select * from proxy_servers where id = ?", mapper(), id).stream()
-                .findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "proxy not found"));
+        return proxyDao.selectServerById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "proxy not found"));
     }
 
     ProxyServer create(ProxyServerRequest request) {
         var now = Instant.now().toString();
-        jdbc.update("""
-                insert into proxy_servers(name, protocol, host, port, username, password, enabled, created_at, updated_at)
-                values(?,?,?,?,?,?,?,?,?)
-                """, requireText(request.name(), "name"), Objects.requireNonNull(request.protocol(), "protocol").name(),
-                requireText(request.host(), "host"), validPort(request.port()), request.username(), request.password(),
-                bool(request.enabled(), true) ? 1 : 0, now, now);
-        Long id = jdbc.queryForObject("select last_insert_rowid()", Long.class);
+        long id = proxyDao.insertServer(
+                ValidationSupport.requireText(request.name(), "name"),
+                java.util.Objects.requireNonNull(request.protocol(), "protocol").name(),
+                ValidationSupport.requireText(request.host(), "host"),
+                ValidationSupport.validPort(request.port()),
+                request.username(),
+                request.password(),
+                ValidationSupport.bool(request.enabled(), true),
+                now, now);
         return get(id).masked();
     }
 
     ProxyServer update(long id, ProxyServerRequest request) {
         get(id);
-        jdbc.update("""
-                update proxy_servers set name = ?, protocol = ?, host = ?, port = ?, username = ?, password = ?, enabled = ?, updated_at = ? where id = ?
-                """, requireText(request.name(), "name"), Objects.requireNonNull(request.protocol(), "protocol").name(),
-                requireText(request.host(), "host"), validPort(request.port()), request.username(), request.password(),
-                bool(request.enabled(), true) ? 1 : 0, Instant.now().toString(), id);
+        proxyDao.updateServer(id,
+                ValidationSupport.requireText(request.name(), "name"),
+                java.util.Objects.requireNonNull(request.protocol(), "protocol").name(),
+                ValidationSupport.requireText(request.host(), "host"),
+                ValidationSupport.validPort(request.port()),
+                request.username(),
+                request.password(),
+                ValidationSupport.bool(request.enabled(), true),
+                Instant.now().toString());
         return get(id).masked();
     }
 
     void delete(long id) {
-        jdbc.update("delete from proxy_servers where id = ?", id);
+        proxyDao.deleteServerById(id);
     }
 
     List<Long> bindings(long accountId) {
-        return jdbc.query("select proxy_id from account_proxies where account_id = ? order by priority",
-                (rs, rowNum) -> rs.getLong("proxy_id"), accountId);
+        return proxyDao.selectProxyIdsByAccountId(accountId);
     }
 
     void bind(long accountId, List<Long> proxyIds) {
-        jdbc.update("delete from account_proxies where account_id = ?", accountId);
+        proxyDao.deleteBindingsByAccountId(accountId);
         int priority = 0;
         for (Long proxyId : proxyIds == null ? List.<Long>of() : proxyIds) {
             get(proxyId);
-            jdbc.update("insert into account_proxies(account_id, proxy_id, priority) values(?,?,?)", accountId, proxyId, priority++);
+            proxyDao.insertBinding(accountId, proxyId, priority++);
         }
     }
 
     List<ProxyConfig> configsForAccount(long accountId) {
-        return jdbc.query("""
-                select p.* from proxy_servers p
-                join account_proxies ap on ap.proxy_id = p.id
-                where ap.account_id = ?
-                order by ap.priority
-                """, mapper(), accountId).stream()
-                .map(p -> new ProxyConfig(p.id(), p.protocol(), p.host(), p.port(), p.username(), p.password(), p.enabled()))
+        return proxyDao.selectProxiesByAccountId(accountId).stream()
+                .map(p -> new ProxyConfig(p.id(), ProxyProtocol.valueOf(p.protocol()),
+                        p.host(), p.port(), p.username(), p.password(), p.enabled()))
                 .toList();
-    }
-
-    private RowMapper<ProxyServer> mapper() {
-        return (rs, rowNum) -> new ProxyServer(rs.getLong("id"), rs.getString("name"),
-                ProxyProtocol.valueOf(rs.getString("protocol")), rs.getString("host"), rs.getInt("port"),
-                rs.getString("username"), rs.getString("password"), rs.getInt("enabled") == 1,
-                Instant.parse(rs.getString("created_at")), Instant.parse(rs.getString("updated_at")));
-    }
-
-    private String requireText(String value, String field) {
-        if (value == null || value.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required");
-        return value.trim();
-    }
-
-    private boolean bool(Boolean value, boolean defaultValue) {
-        return value == null ? defaultValue : value;
-    }
-
-    private int validPort(Integer port) {
-        if (port == null || port <= 0 || port > 65535) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "valid port is required");
-        }
-        return port;
     }
 }
 
 @Service
 class PushChannelService {
-    private final JdbcTemplate jdbc;
-    private final JsonSupport json;
+    private final PushChannelDao channelDao;
     private final RestClient restClient = RestClient.create();
 
-    PushChannelService(JdbcTemplate jdbc, JsonSupport json) {
-        this.jdbc = jdbc;
-        this.json = json;
+    PushChannelService(PushChannelDao channelDao) {
+        this.channelDao = channelDao;
     }
 
     List<PushChannel> list() {
-        return jdbc.query("select * from push_channels order by id", mapper()).stream().map(PushChannel::masked).toList();
+        return channelDao.selectAll().stream().map(PushChannel::masked).toList();
     }
 
     PushChannel get(long id) {
-        return jdbc.query("select * from push_channels where id = ?", mapper(), id).stream()
-                .findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found"));
+        return channelDao.selectById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found"));
     }
 
     PushChannel create(PushChannelRequest request) {
         var now = Instant.now().toString();
         var config = request.config() == null ? Map.<String, Object>of() : request.config();
-        jdbc.update("""
-                insert into push_channels(name, type, enabled, config_json, created_at, updated_at) values(?,?,?,?,?,?)
-                """, requireText(request.name(), "name"), Objects.requireNonNull(request.type(), "type").name(),
-                bool(request.enabled(), true) ? 1 : 0, json.write(config), now, now);
-        Long id = jdbc.queryForObject("select last_insert_rowid()", Long.class);
+        long id = channelDao.insert(
+                ValidationSupport.requireText(request.name(), "name"),
+                java.util.Objects.requireNonNull(request.type(), "type").name(),
+                ValidationSupport.bool(request.enabled(), true),
+                config, now, now);
         return get(id).masked();
     }
 
     PushChannel update(long id, PushChannelRequest request) {
         get(id);
         var config = request.config() == null ? Map.<String, Object>of() : request.config();
-        jdbc.update("update push_channels set name = ?, type = ?, enabled = ?, config_json = ?, updated_at = ? where id = ?",
-                requireText(request.name(), "name"), Objects.requireNonNull(request.type(), "type").name(),
-                bool(request.enabled(), true) ? 1 : 0, json.write(config), Instant.now().toString(), id);
+        channelDao.update(id,
+                ValidationSupport.requireText(request.name(), "name"),
+                java.util.Objects.requireNonNull(request.type(), "type").name(),
+                ValidationSupport.bool(request.enabled(), true),
+                config, Instant.now().toString());
         return get(id).masked();
     }
 
     void delete(long id) {
-        jdbc.update("delete from push_channels where id = ?", id);
+        channelDao.deleteById(id);
     }
 
     DeliveryResult test(long id) {
@@ -392,7 +326,7 @@ class PushChannelService {
         if (!channel.enabled()) {
             return new DeliveryResult(false, "channel disabled");
         }
-        if (channel.type() != PushChannelType.BARK) {
+        if (!"BARK".equals(channel.type())) {
             return new DeliveryResult(false, "unsupported channel type");
         }
         var serverUrl = String.valueOf(channel.config().getOrDefault("serverUrl", "https://api.day.app"));
@@ -412,51 +346,28 @@ class PushChannelService {
             return new DeliveryResult(false, e.getMessage());
         }
     }
-
-    private RowMapper<PushChannel> mapper() {
-        return (rs, rowNum) -> new PushChannel(rs.getLong("id"), rs.getString("name"),
-                PushChannelType.valueOf(rs.getString("type")), rs.getInt("enabled") == 1,
-                json.readMap(rs.getString("config_json")), Instant.parse(rs.getString("created_at")),
-                Instant.parse(rs.getString("updated_at")));
-    }
-
-    private String requireText(String value, String field) {
-        if (value == null || value.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required");
-        return value.trim();
-    }
-
-    private boolean bool(Boolean value, boolean defaultValue) {
-        return value == null ? defaultValue : value;
-    }
 }
 
 @Service
 class NotifiedTelegramMessageService {
-    private final JdbcTemplate jdbc;
+    private final NotifiedMessageDao notifiedMessageDao;
 
-    NotifiedTelegramMessageService(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    NotifiedTelegramMessageService(NotifiedMessageDao notifiedMessageDao) {
+        this.notifiedMessageDao = notifiedMessageDao;
     }
 
     boolean isNotified(TelegramMessageEvent event) {
         if (!hasMessageIdentity(event)) {
             return false;
         }
-        Integer count = jdbc.queryForObject("""
-                select count(*) from notified_telegram_messages
-                where account_id = ? and chat_id = ? and message_id = ?
-                """, Integer.class, event.accountId(), event.chatId(), event.messageId());
-        return count != null && count > 0;
+        return notifiedMessageDao.exists(event.accountId(), event.chatId(), event.messageId());
     }
 
     void remember(TelegramMessageEvent event) {
         if (!hasMessageIdentity(event)) {
             return;
         }
-        jdbc.update("""
-                insert or ignore into notified_telegram_messages(account_id, chat_id, message_id, notified_at)
-                values(?,?,?,?)
-                """, event.accountId(), event.chatId(), event.messageId(), Instant.now().toString());
+        notifiedMessageDao.insert(event.accountId(), event.chatId(), event.messageId(), Instant.now().toString());
     }
 
     private boolean hasMessageIdentity(TelegramMessageEvent event) {
@@ -468,18 +379,16 @@ class NotifiedTelegramMessageService {
 class NotificationRuleService {
     private static final Logger log = LoggerFactory.getLogger(NotificationRuleService.class);
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
-    private final JdbcTemplate jdbc;
-    private final JsonSupport json;
+    private final NotificationRuleDao ruleDao;
     private final PushChannelService channels;
     private final StatisticsService statistics;
     private final TelegramAccountService accounts;
     private final NotifiedTelegramMessageService notifiedMessages;
 
-    NotificationRuleService(JdbcTemplate jdbc, JsonSupport json, PushChannelService channels, StatisticsService statistics,
+    NotificationRuleService(NotificationRuleDao ruleDao, PushChannelService channels, StatisticsService statistics,
                             TelegramAccountService accounts, NotifiedTelegramMessageService notifiedMessages,
                             TelegramAccountSessionManager sessions) {
-        this.jdbc = jdbc;
-        this.json = json;
+        this.ruleDao = ruleDao;
         this.channels = channels;
         this.statistics = statistics;
         this.accounts = accounts;
@@ -488,41 +397,42 @@ class NotificationRuleService {
     }
 
     List<NotificationRule> list() {
-        return jdbc.query("select * from notification_rules order by id", mapper());
+        return ruleDao.selectAll();
     }
 
     NotificationRule get(long id) {
-        return jdbc.query("select * from notification_rules where id = ?", mapper(), id).stream()
-                .findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "rule not found"));
+        return ruleDao.selectById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "rule not found"));
     }
 
     NotificationRule create(NotificationRuleRequest request) {
         var now = Instant.now().toString();
-        jdbc.update("""
-                insert into notification_rules(name, enabled, source_label, condition_json, template, channel_ids_json, created_at, updated_at)
-                values(?,?,?,?,?,?,?,?)
-                """, requireText(request.name(), "name"), bool(request.enabled(), true) ? 1 : 0,
-                defaultText(request.sourceLabel(), "服务器"), json.write(defaultCondition(request.condition())),
-                defaultText(request.template(), "{{receivedAt}} 收到来自{{sourceLabel}}的通知消息"),
-                json.write(request.channelIds() == null ? List.of() : request.channelIds()), now, now);
-        Long id = jdbc.queryForObject("select last_insert_rowid()", Long.class);
+        long id = ruleDao.insert(
+                ValidationSupport.requireText(request.name(), "name"),
+                ValidationSupport.bool(request.enabled(), true),
+                ValidationSupport.defaultText(request.sourceLabel(), "服务器"),
+                defaultCondition(request.condition()),
+                ValidationSupport.defaultText(request.template(), "{{receivedAt}} 收到来自{{sourceLabel}}的通知消息"),
+                request.channelIds() == null ? List.of() : request.channelIds(),
+                now, now);
         return get(id);
     }
 
     NotificationRule update(long id, NotificationRuleRequest request) {
         get(id);
-        jdbc.update("""
-                update notification_rules set name = ?, enabled = ?, source_label = ?, condition_json = ?, template = ?, channel_ids_json = ?, updated_at = ?
-                where id = ?
-                """, requireText(request.name(), "name"), bool(request.enabled(), true) ? 1 : 0,
-                defaultText(request.sourceLabel(), "服务器"), json.write(defaultCondition(request.condition())),
-                defaultText(request.template(), "{{receivedAt}} 收到来自{{sourceLabel}}的通知消息"),
-                json.write(request.channelIds() == null ? List.of() : request.channelIds()), Instant.now().toString(), id);
+        ruleDao.update(id,
+                ValidationSupport.requireText(request.name(), "name"),
+                ValidationSupport.bool(request.enabled(), true),
+                ValidationSupport.defaultText(request.sourceLabel(), "服务器"),
+                defaultCondition(request.condition()),
+                ValidationSupport.defaultText(request.template(), "{{receivedAt}} 收到来自{{sourceLabel}}的通知消息"),
+                request.channelIds() == null ? List.of() : request.channelIds(),
+                Instant.now().toString());
         return get(id);
     }
 
     void delete(long id) {
-        jdbc.update("delete from notification_rules where id = ?", id);
+        ruleDao.deleteById(id);
     }
 
     void handle(TelegramMessageEvent event) {
@@ -593,13 +503,13 @@ class NotificationRuleService {
         values.put("accountId", String.valueOf(event.accountId()));
         values.put("chatId", String.valueOf(event.chatId()));
         values.put("messageId", String.valueOf(event.messageId()));
-        values.put("chatTitle", nullToEmpty(event.chatTitle()));
-        values.put("chatType", nullToEmpty(event.chatType()));
+        values.put("chatTitle", ValidationSupport.nullToEmpty(event.chatTitle()));
+        values.put("chatType", ValidationSupport.nullToEmpty(event.chatType()));
         values.put("senderId", String.valueOf(event.senderId()));
-        values.put("senderName", nullToEmpty(event.senderName()));
-        values.put("senderUsername", nullToEmpty(event.senderUsername()));
-        values.put("sourceLabel", nullToEmpty(rule.sourceLabel()));
-        values.put("text", nullToEmpty(event.text()));
+        values.put("senderName", ValidationSupport.nullToEmpty(event.senderName()));
+        values.put("senderUsername", ValidationSupport.nullToEmpty(event.senderUsername()));
+        values.put("sourceLabel", ValidationSupport.nullToEmpty(rule.sourceLabel()));
+        values.put("text", ValidationSupport.nullToEmpty(event.text()));
         var output = rule.template();
         for (var entry : values.entrySet()) {
             output = output.replace("{{" + entry.getKey() + "}}", entry.getValue());
@@ -612,12 +522,12 @@ class NotificationRuleService {
             case "accountId" -> String.valueOf(event.accountId());
             case "chatId" -> String.valueOf(event.chatId());
             case "messageId" -> String.valueOf(event.messageId());
-            case "chatTitle" -> nullToEmpty(event.chatTitle());
-            case "chatType" -> nullToEmpty(event.chatType());
+            case "chatTitle" -> ValidationSupport.nullToEmpty(event.chatTitle());
+            case "chatType" -> ValidationSupport.nullToEmpty(event.chatType());
             case "senderId" -> String.valueOf(event.senderId());
-            case "senderName" -> nullToEmpty(event.senderName());
-            case "senderUsername" -> nullToEmpty(event.senderUsername());
-            case "text" -> nullToEmpty(event.text());
+            case "senderName" -> ValidationSupport.nullToEmpty(event.senderName());
+            case "senderUsername" -> ValidationSupport.nullToEmpty(event.senderUsername());
+            case "text" -> ValidationSupport.nullToEmpty(event.text());
             default -> "";
         };
     }
@@ -635,73 +545,38 @@ class NotificationRuleService {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     }
 
-    private RowMapper<NotificationRule> mapper() {
-        return (rs, rowNum) -> new NotificationRule(rs.getLong("id"), rs.getString("name"),
-                rs.getInt("enabled") == 1, rs.getString("source_label"), json.readMap(rs.getString("condition_json")),
-                rs.getString("template"), json.readLongList(rs.getString("channel_ids_json")),
-                Instant.parse(rs.getString("created_at")), Instant.parse(rs.getString("updated_at")));
-    }
-
     private Map<String, Object> defaultCondition(Map<String, Object> condition) {
         return condition == null ? Map.of() : condition;
-    }
-
-    private String defaultText(String value, String defaultValue) {
-        return value == null || value.isBlank() ? defaultValue : value;
-    }
-
-    private String requireText(String value, String field) {
-        if (value == null || value.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required");
-        return value.trim();
-    }
-
-    private boolean bool(Boolean value, boolean defaultValue) {
-        return value == null ? defaultValue : value;
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
     }
 }
 
 @Service
 class StatisticsService {
-    private final JdbcTemplate jdbc;
+    private final StatisticsDao statisticsDao;
 
-    StatisticsService(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    StatisticsService(StatisticsDao statisticsDao) {
+        this.statisticsDao = statisticsDao;
     }
 
     void incrementMessages(long accountId) {
-        jdbc.update("""
-                insert into message_stats(bucket, account_id, message_count) values(?,?,1)
-                on conflict(bucket, account_id) do update set message_count = message_count + 1
-                """, bucket(), accountId);
+        statisticsDao.incrementMessageCount(bucket(), accountId);
     }
 
     void incrementRuleHit(long ruleId) {
-        jdbc.update("""
-                insert into rule_stats(bucket, rule_id, hit_count) values(?,?,1)
-                on conflict(bucket, rule_id) do update set hit_count = hit_count + 1
-                """, bucket(), ruleId);
+        statisticsDao.incrementRuleHitCount(bucket(), ruleId);
     }
 
     void recordDelivery(long ruleId, long channelId, boolean success, String message) {
-        jdbc.update("""
-                insert into delivery_stats(bucket, rule_id, channel_id, success_count, failure_count, last_error)
-                values(?,?,?,?,?,?)
-                on conflict(bucket, rule_id, channel_id) do update set
-                    success_count = success_count + excluded.success_count,
-                    failure_count = failure_count + excluded.failure_count,
-                    last_error = excluded.last_error
-                """, bucket(), ruleId, channelId, success ? 1 : 0, success ? 0 : 1, success ? null : truncate(message));
+        statisticsDao.upsertDeliveryStats(bucket(), ruleId, channelId,
+                success ? 1 : 0, success ? 0 : 1,
+                success ? null : truncate(message));
     }
 
     StatisticsResponse query() {
         return new StatisticsResponse(
-                jdbc.queryForList("select * from message_stats order by bucket desc, account_id"),
-                jdbc.queryForList("select * from rule_stats order by bucket desc, rule_id"),
-                jdbc.queryForList("select * from delivery_stats order by bucket desc, rule_id, channel_id")
+                statisticsDao.selectAllMessageStats(),
+                statisticsDao.selectAllRuleStats(),
+                statisticsDao.selectAllDeliveryStats()
         );
     }
 

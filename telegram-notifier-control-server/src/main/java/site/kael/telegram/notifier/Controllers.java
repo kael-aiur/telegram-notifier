@@ -15,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramConnectionStatus;
 import site.kael.telegram.starter.TelegramMessageEvent;
+import site.kael.telegram.notifier.core.model.*;
 
 import java.time.Instant;
 import java.util.List;

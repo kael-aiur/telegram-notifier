@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service;
 import site.kael.telegram.starter.AuthorizationState;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramScanRequest;
+import site.kael.telegram.notifier.core.model.TelegramAccount;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -33,7 +34,7 @@ class TelegramUnreadScanScheduler {
     void scanDueAccounts() {
         var now = Instant.now();
         for (TelegramAccount account : accounts.list()) {
-            if (!account.enabled() || account.authorizationState() != AuthorizationState.READY) {
+            if (!account.enabled() || !AuthorizationState.READY.name().equals(account.authorizationState())) {
                 continue;
             }
             var chatIds = properties.chatIds(account.id());

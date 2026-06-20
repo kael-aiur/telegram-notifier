@@ -5,6 +5,7 @@ import org.mockito.ArgumentCaptor;
 import site.kael.telegram.starter.AuthorizationState;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramScanRequest;
+import site.kael.telegram.notifier.core.model.TelegramAccount;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -69,7 +70,7 @@ class TelegramUnreadScanSchedulerTest {
 
     private TelegramAccount account(long id, AuthorizationState state, boolean enabled, long scanFrequencySeconds) {
         var now = Instant.now();
-        return new TelegramAccount(id, "main", "+100000", enabled, state, null, null,
+        return new TelegramAccount(id, "main", "+100000", enabled, state.name(), null, null,
                 scanFrequencySeconds, 60, now, now);
     }
 }

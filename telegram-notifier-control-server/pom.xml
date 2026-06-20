@@ -15,6 +15,11 @@
     <dependencies>
         <dependency>
             <groupId>site.kael.telegram</groupId>
+            <artifactId>telegram-notifier-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>site.kael.telegram</groupId>
             <artifactId>telegram-spring-boot-starter</artifactId>
             <version>${project.version}</version>
         </dependency>
