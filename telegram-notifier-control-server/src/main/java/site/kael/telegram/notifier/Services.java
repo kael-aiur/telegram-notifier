@@ -2,6 +2,8 @@ package site.kael.telegram.notifier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -10,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
+import site.kael.telegram.starter.AuthorizationState;
 import site.kael.telegram.starter.ProxyConfig;
 import site.kael.telegram.starter.ProxyProtocol;
 import site.kael.telegram.starter.TelegramAccountConfig;
@@ -70,6 +73,7 @@ class AdminService {
 
 @Service
 class TelegramAccountService {
+    private static final Logger log = LoggerFactory.getLogger(TelegramAccountService.class);
     private final JdbcTemplate jdbc;
     private final ProxyService proxyService;
     private final TelegramAccountSessionManager sessions;
@@ -79,6 +83,24 @@ class TelegramAccountService {
         this.proxyService = proxyService;
         this.sessions = sessions;
         this.sessions.subscribeStatus(this::saveStatus);
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    void autoStartReadyAccounts() {
+        var readyAccounts = jdbc.query("select * from telegram_accounts where authorization_state = ? and enabled = 1",
+                mapper(), AuthorizationState.READY.name());
+        if (readyAccounts.isEmpty()) {
+            return;
+        }
+        log.info("auto-starting {} READY account(s)", readyAccounts.size());
+        for (var account : readyAccounts) {
+            try {
+                start(account.id());
+                log.info("auto-started account {} ({})", account.id(), account.displayName());
+            } catch (Exception e) {
+                log.warn("auto-start failed for account {} ({}): {}", account.id(), account.displayName(), e.getMessage());
+            }
+        }
     }
 
     List<TelegramAccount> list() {
@@ -192,7 +214,7 @@ class TelegramAccountService {
                 rs.getString("display_name"),
                 rs.getString("phone_number"),
                 rs.getInt("enabled") == 1,
-                site.kael.telegram.starter.AuthorizationState.valueOf(rs.getString("authorization_state")),
+                AuthorizationState.valueOf(rs.getString("authorization_state")),
                 nullableLong(rs.getObject("active_proxy_id")),
                 rs.getString("connection_error"),
                 rs.getLong("scan_frequency_seconds"),

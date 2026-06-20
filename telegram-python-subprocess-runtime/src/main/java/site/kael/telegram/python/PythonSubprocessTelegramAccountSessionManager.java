@@ -344,7 +344,7 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
 
     private void sendCommand(WorkerState state, String command, Map<String, ?> fields) {
         if (state.session == null || state.session.getStatus() != SessionStatus.RUNNING) {
-            fail(state, "Python worker is not running");
+            LOGGER.fine("telegram python worker " + state.accountId + " is not running; skip command: " + command);
             return;
         }
         try {
