@@ -24,7 +24,7 @@ The Vue SPA SHALL display Telegram account authorization state and provide the i
 - **THEN** the SPA shows a verification code input for that account
 
 ### Requirement: Vue build output is deployable through Spring Boot
-The Vue SPA SHALL produce static build output that can be served by the Spring Boot control server.
+The Vue SPA source code SHALL reside in `telegram-notifier-control-server/src/main/frontend/` and produce static build output that can be served by the Spring Boot control server.
 
 #### Scenario: Browser route is refreshed
 - **WHEN** a user refreshes a non-API SPA route in the browser

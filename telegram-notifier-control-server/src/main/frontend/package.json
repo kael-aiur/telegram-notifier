@@ -1,11 +1,11 @@
 {
-  "name": "telegram-notifier-control-web",
+  "name": "telegram-notifier-control-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --outDir ../../../../telegram-notifier-control-server/src/main/resources/static",
+    "build": "vite build",
     "test": "vitest run"
   },
   "dependencies": {

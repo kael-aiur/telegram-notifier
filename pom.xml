@@ -15,7 +15,6 @@
         <module>telegram-python-subprocess-runtime</module>
         <module>telegram-notifier-core</module>
         <module>telegram-notifier-control-server</module>
-        <module>telegram-notifier-control-web</module>
     </modules>
 
     <properties>

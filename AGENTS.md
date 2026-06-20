@@ -18,10 +18,9 @@ This project is a single-user, self-hosted Telegram notification service built w
   - Exposes `TelegramAccountSessionManager`, authorization state, message event, proxy, scanning, and subscription APIs.
   - Keeps Telegram client runtime details out of the control server.
   - The current implementation provides an in-memory runtime suitable for API integration and tests; production Telegram client internals should stay behind the same interfaces.
-- `telegram-notifier-control-server`: Spring Boot backend and deployment artifact.
+- `telegram-notifier-control-server`: Spring Boot backend, Vue frontend source, and deployment artifact.
   - Owns REST APIs, bootstrap/auth, SQLite persistence, Flyway migrations, rule evaluation, Bark dispatch, statistics, and SPA static serving.
-- `telegram-notifier-control-web`: Vue SPA source.
-  - Builds static assets into the control server static resource directory.
+  - Contains Vue SPA source at `src/main/frontend/`, builds static assets into `src/main/resources/static/`.
   - Provides views for bootstrap/login, accounts, proxies, rules, push channels, and statistics.
 
 ## Runtime Architecture
@@ -103,7 +102,7 @@ mvn test
 Vue source lives in:
 
 ```text
-telegram-notifier-control-web/src/main/frontend
+telegram-notifier-control-server/src/main/frontend
 ```
 
 The Vue build script writes assets to:
