@@ -16,7 +16,7 @@ import site.kael.telegram.starter.ProxyProtocol;
 import site.kael.telegram.starter.TelegramAccountConfig;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramConnectionStatus;
-import site.kael.telegram.starter.TelegramMessageEvent;
+import site.kael.telegram.starter.TelegramMessage;
 import site.kael.telegram.notifier.core.dao.*;
 import site.kael.telegram.notifier.core.model.*;
 import site.kael.telegram.notifier.core.support.ValidationSupport;
@@ -24,7 +24,7 @@ import site.kael.telegram.notifier.core.support.ValidationSupport;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
@@ -356,21 +356,21 @@ class NotifiedTelegramMessageService {
         this.notifiedMessageDao = notifiedMessageDao;
     }
 
-    boolean isNotified(TelegramMessageEvent event) {
+    boolean isNotified(TelegramMessage event) {
         if (!hasMessageIdentity(event)) {
             return false;
         }
         return notifiedMessageDao.exists(event.accountId(), event.chatId(), event.messageId());
     }
 
-    void remember(TelegramMessageEvent event) {
+    void remember(TelegramMessage event) {
         if (!hasMessageIdentity(event)) {
             return;
         }
         notifiedMessageDao.insert(event.accountId(), event.chatId(), event.messageId(), Instant.now().toString());
     }
 
-    private boolean hasMessageIdentity(TelegramMessageEvent event) {
+    private boolean hasMessageIdentity(TelegramMessage event) {
         return event.messageId() > 0;
     }
 }
@@ -378,7 +378,7 @@ class NotifiedTelegramMessageService {
 @Service
 class NotificationRuleService {
     private static final Logger log = LoggerFactory.getLogger(NotificationRuleService.class);
-    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private final NotificationRuleDao ruleDao;
     private final PushChannelService channels;
     private final StatisticsService statistics;
@@ -386,14 +386,12 @@ class NotificationRuleService {
     private final NotifiedTelegramMessageService notifiedMessages;
 
     NotificationRuleService(NotificationRuleDao ruleDao, PushChannelService channels, StatisticsService statistics,
-                            TelegramAccountService accounts, NotifiedTelegramMessageService notifiedMessages,
-                            TelegramAccountSessionManager sessions) {
+                            TelegramAccountService accounts, NotifiedTelegramMessageService notifiedMessages) {
         this.ruleDao = ruleDao;
         this.channels = channels;
         this.statistics = statistics;
         this.accounts = accounts;
         this.notifiedMessages = notifiedMessages;
-        sessions.subscribe(this::handle);
     }
 
     List<NotificationRule> list() {
@@ -435,7 +433,7 @@ class NotificationRuleService {
         ruleDao.deleteById(id);
     }
 
-    void handle(TelegramMessageEvent event) {
+    void handle(TelegramMessage event) {
         if (event.messageId() > 0) {
             if (notifiedMessages.isNotified(event) || !isOldEnough(event)) {
                 return;
@@ -464,13 +462,13 @@ class NotificationRuleService {
         }
     }
 
-    private boolean isOldEnough(TelegramMessageEvent event) {
+    private boolean isOldEnough(TelegramMessage event) {
         return accounts.find(event.accountId())
-                .map(account -> !event.receivedAt().isAfter(Instant.now().minusSeconds(account.unreadAgeThresholdSeconds())))
+                .map(account -> !event.receivedAt().isAfter(LocalDateTime.now().minusSeconds(account.unreadAgeThresholdSeconds())))
                 .orElse(false);
     }
 
-    boolean matches(Map<String, Object> condition, TelegramMessageEvent event) {
+    boolean matches(Map<String, Object> condition, TelegramMessage event) {
         if (condition == null || condition.isEmpty()) {
             return true;
         }
@@ -497,7 +495,7 @@ class NotificationRuleService {
         };
     }
 
-    String render(NotificationRule rule, TelegramMessageEvent event) {
+    String render(NotificationRule rule, TelegramMessage event) {
         var values = new LinkedHashMap<String, String>();
         values.put("receivedAt", FORMATTER.format(event.receivedAt()));
         values.put("accountId", String.valueOf(event.accountId()));
@@ -517,7 +515,7 @@ class NotificationRuleService {
         return output;
     }
 
-    private String fieldValue(String field, TelegramMessageEvent event) {
+    private String fieldValue(String field, TelegramMessage event) {
         return switch (field) {
             case "accountId" -> String.valueOf(event.accountId());
             case "chatId" -> String.valueOf(event.chatId());

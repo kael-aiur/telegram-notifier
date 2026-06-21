@@ -172,6 +172,75 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(0, reply["content"]["result"]["unread"])
         self.assertEqual(0, reply["content"]["result"]["emitted"])
 
+    def test_fetch_unread_emits_scoped_messages_for_chat_and_reply(self):
+        chat = SimpleNamespace(id=100, title="Ops", type="private")
+        sender = SimpleNamespace(id=300, first_name="Ada", last_name="", username="ada")
+        date = datetime(2026, 6, 19, 1, 2, 3, tzinfo=timezone.utc)
+        first = SimpleNamespace(id=7, chat=chat, from_user=sender, date=date, text="one", caption=None)
+        second = SimpleNamespace(id=8, chat=chat, from_user=sender, date=date, text="two", caption=None)
+
+        class FakeClient:
+            def get_dialogs(self):
+                return [SimpleNamespace(chat=chat, unread_messages_count=2)]
+
+            def get_chat_history(self, chat_id, limit):
+                assert chat_id == 100
+                assert limit == 2
+                return [first, second]
+
+        worker = TelegramWorker()
+        worker.state.account_id = 1
+        worker.state.client = FakeClient()
+        worker.current_input_id = "java-fetch"
+
+        original_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            worker.fetch_unread({"chatId": 100})
+            lines = sys.stdout.getvalue().strip().splitlines()
+        finally:
+            sys.stdout = original_stdout
+
+        envelopes = [json.loads(line) for line in lines]
+        messages = [envelope for envelope in envelopes if envelope["type"] == "message"]
+        self.assertEqual(2, len(messages))
+        for envelope in messages:
+            self.assertEqual("java-fetch", envelope["replyInputId"])
+        self.assertEqual({7, 8}, {envelope["content"]["messageId"] for envelope in messages})
+        reply = envelopes[-1]
+        self.assertEqual("reply", reply["type"])
+        self.assertEqual("java-fetch", reply["replyInputId"])
+        self.assertEqual(2, reply["content"]["result"]["count"])
+
+    def test_fetch_unread_replies_with_zero_when_chat_has_no_unread(self):
+        chat = SimpleNamespace(id=100, title="Ops", type="private")
+
+        class FakeClient:
+            def get_dialogs(self):
+                return [SimpleNamespace(chat=chat, unread_messages_count=0)]
+
+            def get_chat_history(self, chat_id, limit):
+                raise AssertionError("history should not be fetched for read chat")
+
+        worker = TelegramWorker()
+        worker.state.account_id = 1
+        worker.state.client = FakeClient()
+        worker.current_input_id = "java-fetch"
+
+        original_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            worker.fetch_unread({"chatId": 100})
+            lines = sys.stdout.getvalue().strip().splitlines()
+        finally:
+            sys.stdout = original_stdout
+
+        envelopes = [json.loads(line) for line in lines]
+        self.assertFalse(any(envelope["type"] == "message" for envelope in envelopes))
+        reply = envelopes[-1]
+        self.assertEqual("reply", reply["type"])
+        self.assertEqual(0, reply["content"]["result"]["count"])
+
     def test_normalize_naive_local_datetime_to_utc(self):
         if not hasattr(time, "tzset"):
             self.skipTest("tzset is not available on this platform")

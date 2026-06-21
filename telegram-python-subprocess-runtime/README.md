@@ -81,6 +81,42 @@ Telegram, including proxies. Business values such as verification codes,
 passwords, chat ids, and unread-message fetch parameters are sent later through
 `send(String str)` as protocol inputs.
 
+## Business client layer
+
+`TelegramSession` is intentionally not a Telegram business object. The single
+account business layer `TelegramClient` (default impl `DefaultTelegramClient`)
+wraps a `TelegramSession` and exposes complete account-scoped Telegram
+capability:
+
+- `getState()` returns the current `AuthorizationState`.
+- `login()` returns a `LoginFlow` that shares state with the client. The flow's
+  `submit(value)` dispatches by the current authorization state (`WAIT_PHONE`
+  submits phone, `WAIT_CODE` submits code, `WAIT_PASSWORD` submits password) and
+  returns the resulting state. `READY` means login succeeded.
+- `peekUnreadMessage(chatId)` returns unread messages as `List<TelegramMessage>`
+  with `receivedAt` as a system-zone `LocalDateTime`. It sends `fetch_unread`
+  and collects the command-scoped `message` envelopes until the matching
+  `reply`.
+- `updateProxies(...)` rebuilds the proxy chain and restarts the session.
+- `start()` / `close()` control eager connect and teardown.
+
+The client lazily starts the Python subprocess (`ensureRunning()`): the first
+operation starts it if it is not running, restarts it after a process-level
+failure, and is idempotent under concurrent first calls. Upper layers never
+start or stop the subprocess directly. The client subscribes to the session
+publisher and routes envelopes by command disposition: `reply` completes the
+matching command wait; command-scoped `message` envelopes for a peek are
+collected into its result; real-time `message` and `log` envelopes are logged as
+metadata only (never message text). Authorization state changes are reported
+through an optional status callback.
+
+`PythonSubprocessTelegramAccountSessionManager` is now a thin registry:
+`Map<accountId, TelegramClient>` plus cross-account status fan-out. It no longer
+touches `TelegramSession` or the publisher directly — it only assembles each
+client's runtime config and delegates. Notification in the control server is
+pull-driven: the scheduler periodically calls `peekUnreadMessages` and feeds the
+results to the notification rules, rather than subscribing to real-time pushes.
+
 ## JSON Lines envelope protocol
 
 Java and Python communicate with one UTF-8 JSON object per line. Every input and

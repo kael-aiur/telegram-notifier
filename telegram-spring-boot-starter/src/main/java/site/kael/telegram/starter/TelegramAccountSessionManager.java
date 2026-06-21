@@ -2,6 +2,12 @@ package site.kael.telegram.starter;
 
 import java.util.List;
 
+/**
+ * 多账号 Telegram 会话管理边界,面向 control-server。
+ *
+ * <p>通知采用 pull 模型:上层通过 {@link #peekUnreadMessages(long, long)} 主动拉取未读消息,
+ * 而不是订阅实时推送。status 变更仍以回调形式通过 {@link #subscribeStatus} 扇出。
+ */
 public interface TelegramAccountSessionManager {
     TelegramConnectionStatus start(TelegramAccountConfig config);
 
@@ -17,16 +23,12 @@ public interface TelegramAccountSessionManager {
 
     void updateProxies(long accountId, List<ProxyConfig> proxies);
 
-    default void scan(long accountId) {
-        scan(new TelegramScanRequest(accountId, List.of()));
-    }
+    /**
+     * 读取指定账号、指定会话的未读消息(peek,不标记已读)。
+     *
+     * @return 未读消息列表;无未读或账号未就绪时返回空列表
+     */
+    List<TelegramMessage> peekUnreadMessages(long accountId, long chatId);
 
-    void scan(TelegramScanRequest request);
-
-    void subscribe(TelegramMessageListener listener);
-
-    default void subscribeStatus(TelegramConnectionStatusListener listener) {
-    }
-
-    void publishTestMessage(TelegramMessageEvent event);
+    void subscribeStatus(TelegramConnectionStatusListener listener);
 }

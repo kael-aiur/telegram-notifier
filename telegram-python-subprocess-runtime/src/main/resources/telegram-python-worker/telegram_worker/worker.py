@@ -165,7 +165,36 @@ class TelegramWorker:
 
     def fetch_unread(self, command):
         self._require_client()
-        emit_reply(self.current_input_id, True, result={"count": 0, "hasMore": False})
+        chat_id = int(command.get("chatId") or 0)
+        if chat_id <= 0:
+            emit_reply(self.current_input_id, True, result={"count": 0, "hasMore": False})
+            return
+        limit = _positive_int(command.get("limit"), 0)
+        max_per_chat = _positive_int(command.get("maxPerChat"), 50)
+        emitted = 0
+        try:
+            effective_limit = limit if limit > 0 else self._unread_count(chat_id)
+            effective_limit = min(effective_limit, max_per_chat)
+            if effective_limit > 0:
+                for message in self.state.client.get_chat_history(chat_id, limit=effective_limit):
+                    emit_message(normalize_message(self.state.account_id, message), reply_input_id=self.current_input_id)
+                    emitted += 1
+        except Exception as exc:
+            message = safe_exception(exc, self._secrets())
+            log("Failed to fetch unread messages: " + message)
+            emit_error(self.state.account_id, message, self.current_input_id)
+            return
+        emit_reply(self.current_input_id, True, result={"count": emitted, "hasMore": False})
+
+    def _unread_count(self, chat_id):
+        try:
+            for dialog in self.state.client.get_dialogs():
+                chat = getattr(dialog, "chat", None)
+                if int(getattr(chat, "id", 0) or 0) == chat_id:
+                    return int(getattr(dialog, "unread_messages_count", 0) or 0)
+        except Exception as exc:
+            log("Failed to read unread count for chat %s: %s" % (chat_id, safe_exception(exc, self._secrets())))
+        return 0
 
     def ready(self):
         self._initialize_client()

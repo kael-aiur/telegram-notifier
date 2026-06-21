@@ -4,13 +4,12 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class InMemoryTelegramAccountSessionManagerTest {
     @Test
-    void mapsLoginStatesAndNormalizesEvents() {
+    void mapsLoginStatesAndPeeksEmpty() {
         var manager = new InMemoryTelegramAccountSessionManager();
         var proxy = new ProxyConfig(7L, ProxyProtocol.SOCKS5, "localhost", 1080, null, null, true);
 
@@ -21,11 +20,7 @@ class InMemoryTelegramAccountSessionManagerTest {
         assertThat(manager.submitPhone(1L, "+100000000").authorizationState()).isEqualTo(AuthorizationState.WAIT_CODE);
         assertThat(manager.submitCode(1L, "12345").authorizationState()).isEqualTo(AuthorizationState.READY);
 
-        var received = new AtomicReference<TelegramMessageEvent>();
-        manager.subscribe(received::set);
-        var event = new TelegramMessageEvent(1L, 2L, 4L, "server", "channel", 3L, "sender", "sender",
-                java.time.Instant.now(), "secret");
-        manager.publishTestMessage(event);
-        assertThat(received.get()).isEqualTo(event);
+        // pull 模型:测试桩不模拟未读消息,peek 恒返回空列表
+        assertThat(manager.peekUnreadMessages(1L, 42L)).isEmpty();
     }
 }
