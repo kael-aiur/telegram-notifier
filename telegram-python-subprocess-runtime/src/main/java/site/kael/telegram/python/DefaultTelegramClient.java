@@ -3,6 +3,7 @@ package site.kael.telegram.python;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import site.kael.telegram.starter.AuthorizationState;
+import site.kael.telegram.starter.ProxyConfig;
 import site.kael.telegram.starter.TelegramConnectionStatus;
 import site.kael.telegram.starter.TelegramMessage;
 
@@ -20,7 +21,6 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.logging.Logger;
 
 /**
@@ -44,12 +44,12 @@ public class DefaultTelegramClient implements TelegramClient {
 
     private final TelegramSession session;
     private final ObjectMapper objectMapper;
-    private final Function<String, String> sanitizer;
     private final Consumer<TelegramConnectionStatus> statusListener;
     private final AtomicLong inputIds = new AtomicLong();
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
     private volatile TelegramClientConfig config;
+    private volatile TelegramSessionConfig sessionConfig;
     private volatile AuthorizationState authorizationState = AuthorizationState.LOGGED_OUT;
     private volatile Long activeProxyId;
     private volatile String errorMessage;
@@ -57,20 +57,21 @@ public class DefaultTelegramClient implements TelegramClient {
     private volatile boolean closed;
 
     public DefaultTelegramClient(TelegramSession session, TelegramClientConfig config,
-                                 ObjectMapper objectMapper, Function<String, String> sanitizer) {
-        this(session, config, objectMapper, sanitizer, null);
+                                 TelegramSessionConfig sessionConfig, ObjectMapper objectMapper) {
+        this(session, config, sessionConfig, objectMapper, null);
     }
 
     /**
+     * @param sessionConfig  进程级运行配置(executable/workerScript/proxies 等),由工厂注入,仅在实现内部使用。
      * @param statusListener 授权状态变更回调(供注册表 manager 扇出给 subscribeStatus 监听器),可为 null。
      */
     public DefaultTelegramClient(TelegramSession session, TelegramClientConfig config,
-                                 ObjectMapper objectMapper, Function<String, String> sanitizer,
+                                 TelegramSessionConfig sessionConfig, ObjectMapper objectMapper,
                                  Consumer<TelegramConnectionStatus> statusListener) {
         this.session = Objects.requireNonNull(session, "session");
         this.config = Objects.requireNonNull(config, "config");
+        this.sessionConfig = Objects.requireNonNull(sessionConfig, "sessionConfig");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-        this.sanitizer = sanitizer == null ? Function.identity() : sanitizer;
         this.statusListener = statusListener;
         session.getPublisher().subscribe(new Flow.Subscriber<>() {
             @Override
@@ -146,22 +147,33 @@ public class DefaultTelegramClient implements TelegramClient {
     }
 
     @Override
-    public synchronized void updateProxies(List<TelegramSessionProxyConfig> proxies) {
+    public synchronized void updateProxies(List<ProxyConfig> proxies) {
         if (closed) {
             throw new IllegalStateException("TelegramClient is closed");
         }
-        var sc = config.sessionConfig();
-        var rebuilt = new TelegramSessionConfig(
+        var newProxies = proxies == null ? List.<ProxyConfig>of() : List.copyOf(proxies);
+        var sessionProxies = toSessionProxies(newProxies);
+        var sc = sessionConfig;
+        sessionConfig = new TelegramSessionConfig(
                 sc.executable(), sc.workerScript(), sc.workingDirectory(), sc.runtimeDataDirectory(),
-                sc.extraArgs(), sc.environment(),
-                proxies == null ? List.of() : List.copyOf(proxies),
+                sc.extraArgs(), sc.environment(), sessionProxies,
                 sc.startupTimeout(), sc.shutdownTimeout());
         config = new TelegramClientConfig(config.accountId(), config.displayName(), config.phoneNumber(),
-                config.apiId(), config.apiHash(), config.dataDir(), rebuilt);
+                config.apiId(), config.apiHash(), config.dataDir(), newProxies);
         stopSession();
         startSent = false;
         authorizationState = AuthorizationState.LOGGED_OUT;
         ensureConnected();
+    }
+
+    /** 业务形态 {@link ProxyConfig} → 底层 session 代理形态,仅在本实现内部使用。 */
+    private List<TelegramSessionProxyConfig> toSessionProxies(List<ProxyConfig> proxies) {
+        return proxies.stream()
+                .filter(ProxyConfig::enabled)
+                .map(proxy -> new TelegramSessionProxyConfig(
+                        proxy.id(), proxy.protocol().name(), proxy.host(), proxy.port(),
+                        proxy.username(), proxy.password()))
+                .toList();
     }
 
     @Override
@@ -196,7 +208,7 @@ public class DefaultTelegramClient implements TelegramClient {
         }
         // NEW / STOPPED / FAILED:按当前 config(重新)启动子进程。新进程是全新的,
         // 必须重发 start 命令才能重连,因此重置 startSent(首次调用时本就是 false,赋值无害)。
-        session.start(config.sessionConfig());
+        session.start(sessionConfig);
         startSent = false;
     }
 
@@ -443,7 +455,20 @@ public class DefaultTelegramClient implements TelegramClient {
     }
 
     private String sanitize(String value) {
-        return sanitizer.apply(value == null ? "" : value);
+        if (value == null) {
+            return "";
+        }
+        var output = value;
+        var apiHash = config.apiHash();
+        if (apiHash != null && !apiHash.isBlank()) {
+            output = output.replace(apiHash, "******");
+        }
+        for (ProxyConfig proxy : config.proxies()) {
+            if (proxy.password() != null && !proxy.password().isBlank()) {
+                output = output.replace(proxy.password(), "******");
+            }
+        }
+        return output;
     }
 
     private String safe(Throwable error) {

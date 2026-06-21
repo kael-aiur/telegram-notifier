@@ -1,12 +1,13 @@
 package site.kael.telegram.python;
 
 import site.kael.telegram.starter.AuthorizationState;
+import site.kael.telegram.starter.ProxyConfig;
 import site.kael.telegram.starter.TelegramMessage;
 
 import java.util.List;
 
 /**
- * 单账号 Telegram 业务能力层,把底层 {@link TelegramSession} 包装成完整的 Telegram 业务对象。
+ * 单账号 Telegram 业务能力层,把底层子进程会话包装成完整的 Telegram 业务对象。
  *
  * <p>本接口只暴露业务能力,不包含任何调度或轮询策略。上层(getState 之外的)操作会按需懒启动
  * Python 子进程,无需显式调用进程启动逻辑。
@@ -26,8 +27,9 @@ public interface TelegramClient extends AutoCloseable {
      */
     List<TelegramMessage> peekUnreadMessage(long chatId);
 
-    /** 更新代理链并重启会话,使新代理生效,授权状态机尽量延续。 */
-    void updateProxies(List<TelegramSessionProxyConfig> proxies);
+    /** 更新代理链并重启会话,使新代理生效,授权状态机尽量延续。代理以业务形态 {@link ProxyConfig} 传入,
+     * 到底层 session 代理的转换在实现内部完成,不外泄 session 代理类型。 */
+    void updateProxies(List<ProxyConfig> proxies);
 
     /** 显式立即启动并连接(供注册表 eager start 使用)。 */
     void start();

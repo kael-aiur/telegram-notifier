@@ -1,13 +1,15 @@
 package site.kael.telegram.python;
 
+import site.kael.telegram.starter.ProxyConfig;
+
 import java.nio.file.Path;
-import java.util.Objects;
+import java.util.List;
 
 /**
- * 单账号 {@link TelegramClient} 启动与运行所需的全部配置。
+ * 单账号 {@link TelegramClient} 的业务配置:只承载业务字段,不包含任何底层 session 概念。
  *
- * <p>由注册表(manager)负责组装:业务字段来自账号与全局 client 属性,进程级配置复用
- * {@link TelegramSessionConfig}。client 只接收并使用本配置,不自行解析 apiId/dataDir 等来源。
+ * <p>进程级配置(executable/workerScript/workingDirectory 等)由 {@code TelegramClientFactory} 持有,
+ * 在 {@code create()} 时与底层 session 一起注入 client 实现内部,不通过本配置外泄。
  *
  * @param accountId    账号 id
  * @param displayName  账号显示名
@@ -15,7 +17,7 @@ import java.util.Objects;
  * @param apiId        Telegram api id
  * @param apiHash      Telegram api hash(敏感)
  * @param dataDir      账号数据目录(承载 session 文件)
- * @param sessionConfig Python 子进程运行配置
+ * @param proxies      账号绑定的代理链(业务形态,按优先级排序)
  */
 public record TelegramClientConfig(
         long accountId,
@@ -24,12 +26,12 @@ public record TelegramClientConfig(
         int apiId,
         String apiHash,
         Path dataDir,
-        TelegramSessionConfig sessionConfig
+        List<ProxyConfig> proxies
 ) {
     public TelegramClientConfig {
         displayName = displayName == null ? "" : displayName;
         phoneNumber = phoneNumber == null ? "" : phoneNumber;
         apiHash = apiHash == null ? "" : apiHash;
-        Objects.requireNonNull(sessionConfig, "sessionConfig");
+        proxies = proxies == null ? List.of() : List.copyOf(proxies);
     }
 }

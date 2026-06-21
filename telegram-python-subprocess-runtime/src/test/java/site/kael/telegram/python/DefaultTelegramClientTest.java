@@ -38,11 +38,15 @@ class DefaultTelegramClientTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     private static TelegramClientConfig config() {
-        var sessionConfig = new TelegramSessionConfig(
+        return new TelegramClientConfig(1L, "acct", "+8613800000000", 123456,
+                "api-hash-secret", Path.of("/tmp/account-1"), List.of());
+    }
+
+    /** 进程级 session 配置,仅在测试内部用于构造 client(测试作为 runtime 模块内部消费者可使用 session 类型)。 */
+    private static TelegramSessionConfig sessionConfig() {
+        return new TelegramSessionConfig(
                 "python3", Path.of("/tmp/worker.py"), null, null,
                 List.of(), Map.of(), List.of(), null, null);
-        return new TelegramClientConfig(1L, "acct", "+8613800000000", 123456,
-                "api-hash-secret", Path.of("/tmp/account-1"), sessionConfig);
     }
 
     private StubSession newSession(Consumer<Command> responder) {
@@ -69,7 +73,7 @@ class DefaultTelegramClientTest {
 
     @Test
     void initialStateIsLoggedOutBeforeAnyOperation() {
-        var client = new DefaultTelegramClient(newSession(c -> {}), config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(newSession(c -> {}), config(), sessionConfig(), mapper);
         assertEquals(AuthorizationState.LOGGED_OUT, client.getState());
     }
 
@@ -77,7 +81,7 @@ class DefaultTelegramClientTest {
     void loginSendsStartAndDrivesSubmitByCurrentState() throws Exception {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         var flow = client.login();
         assertEquals(AuthorizationState.WAIT_CODE, flow.getState());
@@ -98,7 +102,7 @@ class DefaultTelegramClientTest {
     void ensureRunningStartsSessionExactlyOnceUnderConcurrency() throws Exception {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         int threads = 8;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
@@ -126,7 +130,7 @@ class DefaultTelegramClientTest {
     void processLevelFailureTriggersRestartAndReconnect() {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         client.login();
         assertEquals(1, session.startCount.get());
@@ -146,7 +150,7 @@ class DefaultTelegramClientTest {
     void peekUnreadCollectsScopedMessagesUntilReply() {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         List<TelegramMessage> unread = client.peekUnreadMessage(100L);
         assertEquals(2, unread.size());
@@ -165,7 +169,7 @@ class DefaultTelegramClientTest {
     void emptyUnreadReturnsEmptyList() {
         var session = newSession(c -> {});
         session.responder = cmd -> session.emit(doneReply(mapper, cmd.inputId));
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         List<TelegramMessage> unread = client.peekUnreadMessage(100L);
         assertTrue(unread.isEmpty());
@@ -175,7 +179,7 @@ class DefaultTelegramClientTest {
     void realTimeMessageIsLoggedAsMetadataOnlyAndNotCollected() throws Exception {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
 
         var logger = Logger.getLogger(DefaultTelegramClient.class.getName());
         var recorder = new RecordingHandler();
@@ -203,7 +207,7 @@ class DefaultTelegramClientTest {
     void closeStopsSessionAndUnblocksWaiters() {
         var session = newSession(c -> {});
         defaultResponder(session);
-        var client = new DefaultTelegramClient(session, config(), mapper, java.util.function.Function.identity());
+        var client = new DefaultTelegramClient(session, config(), sessionConfig(), mapper);
         client.login();
         client.close();
         assertEquals(SessionStatus.STOPPED, session.status);

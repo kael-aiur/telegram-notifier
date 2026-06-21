@@ -103,7 +103,8 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         runtime.setWorkingDirectory(workerDir);
         runtime.setRequiredModules(List.of());
         var client = clientProperties(dataDir);
-        var manager = new PythonSubprocessTelegramAccountSessionManager(client, runtime, new ObjectMapper());
+        var factory = new DefaultTelegramClientFactory(client, runtime, new ObjectMapper());
+        var manager = new PythonSubprocessTelegramAccountSessionManager(factory);
         var statuses = new CopyOnWriteArrayList<AuthorizationState>();
         manager.subscribeStatus(status -> statuses.add(status.authorizationState()));
 
@@ -300,7 +301,8 @@ class PythonSubprocessTelegramAccountSessionManagerTest {
         runtime.setWorkerScript(workerScript);
         runtime.setWorkingDirectory(workingDirectory);
         runtime.setRequiredModules(requiredModules);
-        return new PythonSubprocessTelegramAccountSessionManager(clientProperties(dataDir), runtime, new ObjectMapper());
+        var factory = new DefaultTelegramClientFactory(clientProperties(dataDir), runtime, new ObjectMapper());
+        return new PythonSubprocessTelegramAccountSessionManager(factory);
     }
 
     private TelegramClientProperties clientProperties(Path dataDir) {
