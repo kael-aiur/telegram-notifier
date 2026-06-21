@@ -10,6 +10,9 @@
 # Maven build output (will be rebuilt in Docker)
 **/target/
 
+# Node dependencies (installed inside the frontend-builder stage)
+**/node_modules/
+
 # Local data
 data/
 

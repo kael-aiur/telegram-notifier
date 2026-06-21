@@ -7,10 +7,10 @@
 FROM node:20-slim AS frontend-builder
 
 WORKDIR /app
-COPY telegram-notifier-control-web/src/main/frontend/package*.json telegram-notifier-control-web/src/main/frontend/
-RUN cd telegram-notifier-control-web/src/main/frontend && npm ci
-COPY telegram-notifier-control-web/src/main/frontend telegram-notifier-control-web/src/main/frontend
-RUN cd telegram-notifier-control-web/src/main/frontend && npm run build
+COPY telegram-notifier-control-server/src/main/frontend/package*.json telegram-notifier-control-server/src/main/frontend/
+RUN cd telegram-notifier-control-server/src/main/frontend && npm ci
+COPY telegram-notifier-control-server/src/main/frontend telegram-notifier-control-server/src/main/frontend
+RUN cd telegram-notifier-control-server/src/main/frontend && npm run build
 
 # ============================================================
 # Stage 2: Maven Build
@@ -22,8 +22,8 @@ COPY pom.xml .
 COPY telegram-tdlight-classifier-all/pom.xml telegram-tdlight-classifier-all/
 COPY telegram-spring-boot-starter/pom.xml telegram-spring-boot-starter/
 COPY telegram-python-subprocess-runtime/pom.xml telegram-python-subprocess-runtime/
+COPY telegram-notifier-core/pom.xml telegram-notifier-core/
 COPY telegram-notifier-control-server/pom.xml telegram-notifier-control-server/
-COPY telegram-notifier-control-web/pom.xml telegram-notifier-control-web/
 
 # Download dependencies first (cached layer)
 RUN mvn dependency:go-offline -B
@@ -32,8 +32,8 @@ RUN mvn dependency:go-offline -B
 COPY telegram-tdlight-classifier-all telegram-tdlight-classifier-all
 COPY telegram-spring-boot-starter telegram-spring-boot-starter
 COPY telegram-python-subprocess-runtime telegram-python-subprocess-runtime
+COPY telegram-notifier-core telegram-notifier-core
 COPY telegram-notifier-control-server telegram-notifier-control-server
-COPY telegram-notifier-control-web telegram-notifier-control-web
 
 # Copy frontend build output into control-server static resources
 COPY --from=frontend-builder /app/telegram-notifier-control-server/src/main/resources/static telegram-notifier-control-server/src/main/resources/static
