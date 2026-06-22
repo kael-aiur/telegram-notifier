@@ -1,13 +1,4 @@
-## Purpose
-Defines the Vue control console behavior for bootstrap, login, resource management, Telegram account interaction, and packaged asset serving.
-
-## Requirements
-### Requirement: Vue console supports bootstrap and login
-The Vue SPA SHALL provide screens for administrator initialization when required and login after initialization.
-
-#### Scenario: Bootstrap required
-- **WHEN** the SPA loads and the backend reports that administrator initialization is required
-- **THEN** the SPA shows the initialization flow instead of the normal login flow
+## MODIFIED Requirements
 
 ### Requirement: Vue console manages core resources
 Vue SPA SHALL 通过侧边导航提供四个核心资源的已认证管理视图——账号管理、推送通道、网络代理、推送规则——每个视图均通过列表表格与弹窗表单支持完整的增、查、改、删（CRUD）操作。
@@ -39,6 +30,8 @@ Vue SPA SHALL 通过弹窗内的流程节点 stepper 向导驱动账号授权，
 - **WHEN** 某次登录提交返回 `ERROR` 或后端报错
 - **THEN** SPA 展示错误信息并保持向导开启以供重试
 
+## ADDED Requirements
+
 ### Requirement: 被引用资源阻止删除
 Vue SPA SHALL 阻止删除被其它资源引用的资源——被某账号代理链引用的代理、被某条规则引用的推送通道——方式是呈现后端的拒绝信息，而非静默删除。
 
@@ -60,14 +53,3 @@ Vue SPA SHALL 在编辑弹窗中将被掩码的密钥字段——代理密码、
 #### Scenario: 编辑通道但不重新输入 deviceKey
 - **WHEN** 管理员编辑推送通道且 `deviceKey` 字段留空
 - **THEN** SPA 提交更新而不改变已存储的 `deviceKey`
-
-### Requirement: Vue build output is deployable through Spring Boot
-The Vue SPA source code SHALL reside in `telegram-notifier-control-server/src/main/frontend/` and produce static build output that can be served by the Spring Boot control server.
-
-#### Scenario: Browser route is refreshed
-- **WHEN** a user refreshes a non-API SPA route in the browser
-- **THEN** the Spring Boot server returns the SPA entry point so the Vue router can render the route
-
-#### Scenario: Frontend build writes to server static resources
-- **WHEN** the developer runs the Vite build from `src/main/frontend/`
-- **THEN** the output is written to `src/main/resources/static/` within the same Maven module
