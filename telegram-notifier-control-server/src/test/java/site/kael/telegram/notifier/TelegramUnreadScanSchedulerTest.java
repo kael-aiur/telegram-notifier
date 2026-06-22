@@ -12,6 +12,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -38,7 +39,7 @@ class TelegramUnreadScanSchedulerTest {
 
         verify(sessions).peekUnreadMessages(1L, 42L);
         verify(sessions).peekUnreadMessages(1L, 43L);
-        verify(notifications).handle(message);
+        verify(notifications).handleBatch(List.of(message));
     }
 
     @Test
@@ -56,7 +57,7 @@ class TelegramUnreadScanSchedulerTest {
         scheduler.scanDueAccounts();
 
         verify(sessions, never()).peekUnreadMessages(anyLong(), anyLong());
-        verify(notifications, never()).handle(any());
+        verify(notifications, never()).handleBatch(anyList());
     }
 
     @Test
@@ -78,6 +79,6 @@ class TelegramUnreadScanSchedulerTest {
     private TelegramAccount account(long id, AuthorizationState state, boolean enabled, long scanFrequencySeconds) {
         var now = java.time.Instant.now();
         return new TelegramAccount(id, "main", "+100000", enabled, state.name(), null, null,
-                scanFrequencySeconds, 60, now, now);
+                scanFrequencySeconds, 60, false, now, now);
     }
 }

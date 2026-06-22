@@ -56,8 +56,9 @@ class TelegramUnreadScanScheduler {
             }
             lastScans.put(account.id(), now);
             for (Long chatId : chatIds) {
-                for (TelegramMessage message : sessions.peekUnreadMessages(account.id(), chatId)) {
-                    notifications.handle(message);
+                var messages = sessions.peekUnreadMessages(account.id(), chatId);
+                if (!messages.isEmpty()) {
+                    notifications.handleBatch(messages);
                 }
             }
         }

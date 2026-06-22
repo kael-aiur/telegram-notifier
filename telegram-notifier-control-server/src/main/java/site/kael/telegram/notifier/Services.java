@@ -479,6 +479,46 @@ class NotificationRuleService {
         }
     }
 
+    void handleBatch(List<TelegramMessage> messages) {
+        var pushed = false;
+        for (var event : messages) {
+            if (pushed) {
+                break;
+            }
+            if (event.messageId() > 0) {
+                if (notifiedMessages.isNotified(event) || !isOldEnough(event)) {
+                    continue;
+                }
+            }
+            var matched = false;
+            statistics.incrementMessages(event.accountId());
+            for (NotificationRule rule : list().stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
+                matched = true;
+                statistics.incrementRuleHit(rule.id());
+                var content = render(rule, event);
+                for (Long channelId : rule.channelIds()) {
+                    PushChannel channel;
+                    try {
+                        channel = channels.get(channelId);
+                    } catch (Exception e) {
+                        log.warn("channel not found by id: {} for rule {}(id: {})", channelId, rule.name(), rule.id());
+                        continue;
+                    }
+                    var result = channels.send(channel, content);
+                    statistics.recordDelivery(rule.id(), channelId, result.success(), result.message());
+                }
+            }
+            if (matched) {
+                pushed = true;
+            }
+        }
+        if (pushed) {
+            for (var event : messages) {
+                notifiedMessages.remember(event);
+            }
+        }
+    }
+
     private boolean isOldEnough(TelegramMessage event) {
         return accounts.find(event.accountId())
                 .map(account -> !event.receivedAt().isAfter(LocalDateTime.now().minusSeconds(account.unreadAgeThresholdSeconds())))

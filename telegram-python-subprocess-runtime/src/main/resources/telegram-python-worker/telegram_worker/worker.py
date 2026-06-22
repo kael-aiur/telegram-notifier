@@ -161,6 +161,7 @@ class TelegramWorker:
                     break
         except Exception as exc:
             log("Failed to scan Telegram dialogs: " + safe_exception(exc, self._secrets()))
+        log("scan completed: scanned=%d unread=%d emitted=%d" % (scanned, unread, emitted))
         emit_reply(self.current_input_id, True, result={"scanned": scanned, "unread": unread, "emitted": emitted})
 
     def fetch_unread(self, command):
@@ -184,6 +185,7 @@ class TelegramWorker:
             log("Failed to fetch unread messages: " + message)
             emit_error(self.state.account_id, message, self.current_input_id)
             return
+        log("fetch_unread completed: chatId=%d count=%d" % (chat_id, emitted))
         emit_reply(self.current_input_id, True, result={"count": emitted, "hasMore": False})
 
     def _unread_count(self, chat_id):
