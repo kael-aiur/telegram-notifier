@@ -8,7 +8,7 @@
 
     <el-table :data="accounts" v-loading="loading" stripe>
       <el-table-column prop="displayName" label="名称" min-width="120" />
-      <el-table-column prop="phoneNumber" label="电话" width="160" />
+      <el-table-column prop="phoneNumber" label="电话" width="320" />
       <el-table-column label="授权状态" width="120" align="center">
         <template #default="{ row }">
           <el-tag :type="authStateType(row.authorizationState)" size="small">
