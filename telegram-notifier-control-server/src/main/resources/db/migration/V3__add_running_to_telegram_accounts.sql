@@ -1,0 +1,1 @@
+ALTER TABLE telegram_accounts ADD COLUMN running INTEGER NOT NULL DEFAULT 0;

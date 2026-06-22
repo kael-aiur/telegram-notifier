@@ -69,6 +69,13 @@ public class ProxyDao {
         jdbc.update("DELETE FROM proxy_servers WHERE id = ?", id);
     }
 
+    public boolean isReferencedByAccounts(long proxyId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM account_proxies WHERE proxy_id = ?",
+                Integer.class, proxyId);
+        return count != null && count > 0;
+    }
+
     // ===== Account-Proxy Binding Operations =====
 
     public List<Long> selectProxyIdsByAccountId(long accountId) {

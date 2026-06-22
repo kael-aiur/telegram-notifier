@@ -80,6 +80,10 @@ class TelegramAccountService {
 
     @EventListener(ApplicationReadyEvent.class)
     void autoStartReadyAccounts() {
+        // Reset all accounts to not-running on startup
+        for (var account : accountDao.selectAll()) {
+            accountDao.updateRunning(account.id(), false, Instant.now().toString());
+        }
         var readyAccounts = accountDao.selectByAuthorizationStateAndEnabled(
                 AuthorizationState.READY.name(), true);
         if (readyAccounts.isEmpty()) {
@@ -146,12 +150,14 @@ class TelegramAccountService {
                 Duration.ofSeconds(account.unreadAgeThresholdSeconds()),
                 proxyService.configsForAccount(id)));
         saveStatus(status);
+        accountDao.updateRunning(id, true, Instant.now().toString());
         return status;
     }
 
     TelegramConnectionStatus stop(long id) {
         var status = sessions.stop(id);
         saveStatus(status);
+        accountDao.updateRunning(id, false, Instant.now().toString());
         return status;
     }
 
@@ -236,20 +242,23 @@ class ProxyService {
     }
 
     ProxyServer update(long id, ProxyServerRequest request) {
-        get(id);
+        var existing = get(id);
         proxyDao.updateServer(id,
                 ValidationSupport.requireText(request.name(), "name"),
                 java.util.Objects.requireNonNull(request.protocol(), "protocol").name(),
                 ValidationSupport.requireText(request.host(), "host"),
                 ValidationSupport.validPort(request.port()),
-                request.username(),
-                request.password(),
+                request.username() != null ? request.username() : existing.username(),
+                request.password() != null && !request.password().isBlank() ? request.password() : existing.password(),
                 ValidationSupport.bool(request.enabled(), true),
                 Instant.now().toString());
         return get(id).masked();
     }
 
     void delete(long id) {
+        if (proxyDao.isReferencedByAccounts(id)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "该代理已被账号引用，无法删除");
+        }
         proxyDao.deleteServerById(id);
     }
 
@@ -277,10 +286,12 @@ class ProxyService {
 @Service
 class PushChannelService {
     private final PushChannelDao channelDao;
+    private final NotificationRuleDao ruleDao;
     private final RestClient restClient = RestClient.create();
 
-    PushChannelService(PushChannelDao channelDao) {
+    PushChannelService(PushChannelDao channelDao, NotificationRuleDao ruleDao) {
         this.channelDao = channelDao;
+        this.ruleDao = ruleDao;
     }
 
     List<PushChannel> list() {
@@ -304,8 +315,11 @@ class PushChannelService {
     }
 
     PushChannel update(long id, PushChannelRequest request) {
-        get(id);
-        var config = request.config() == null ? Map.<String, Object>of() : request.config();
+        var existing = get(id);
+        var incoming = request.config() == null ? Map.<String, Object>of() : request.config();
+        // Merge: preserve existing config keys when incoming omits them (e.g. deviceKey)
+        var config = new java.util.LinkedHashMap<>(existing.config());
+        config.putAll(incoming);
         channelDao.update(id,
                 ValidationSupport.requireText(request.name(), "name"),
                 java.util.Objects.requireNonNull(request.type(), "type").name(),
@@ -315,6 +329,9 @@ class PushChannelService {
     }
 
     void delete(long id) {
+        if (ruleDao.isChannelReferenced(id)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "该通道已被规则引用，无法删除");
+        }
         channelDao.deleteById(id);
     }
 

@@ -12,6 +12,7 @@ public record TelegramAccount(
         String connectionError,
         long scanFrequencySeconds,
         long unreadAgeThresholdSeconds,
+        boolean running,
         Instant createdAt,
         Instant updatedAt
 ) {

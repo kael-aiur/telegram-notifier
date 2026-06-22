@@ -26,6 +26,7 @@ public class TelegramAccountDao {
                 rs.getString("connection_error"),
                 rs.getLong("scan_frequency_seconds"),
                 rs.getLong("unread_age_threshold_seconds"),
+                rs.getInt("running") == 1,
                 Instant.parse(rs.getString("created_at")),
                 Instant.parse(rs.getString("updated_at"))
         );
@@ -101,6 +102,14 @@ public class TelegramAccountDao {
                 SET phone_number = ?, updated_at = ?
                 WHERE id = ?
                 """, phoneNumber, updatedAt, id);
+    }
+
+    public void updateRunning(long id, boolean running, String updatedAt) {
+        jdbc.update("""
+                UPDATE telegram_accounts
+                SET running = ?, updated_at = ?
+                WHERE id = ?
+                """, running ? 1 : 0, updatedAt, id);
     }
 
     private Long nullableLong(Object value) {

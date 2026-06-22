@@ -73,4 +73,13 @@ public class NotificationRuleDao {
     public void deleteById(long id) {
         jdbc.update("DELETE FROM notification_rules WHERE id = ?", id);
     }
+
+    public boolean isChannelReferenced(long channelId) {
+        // channel_ids_json is a JSON array like [1,2,3]
+        // Use SQLite json_each to check membership
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM notification_rules, json_each(notification_rules.channel_ids_json) WHERE json_each.value = ?",
+                Integer.class, channelId);
+        return count != null && count > 0;
+    }
 }
