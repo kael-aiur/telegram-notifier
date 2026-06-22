@@ -17,6 +17,10 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 export async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
   const token = getToken()

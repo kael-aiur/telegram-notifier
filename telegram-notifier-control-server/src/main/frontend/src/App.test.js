@@ -1,17 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import App from './App.vue'
 
 describe('App', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
+  it('renders router-view', () => {
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          'router-view': { template: '<div>router-view-stub</div>' }
+        }
+      }
+    })
 
-  it('renders loading state before bootstrap completes', () => {
-    vi.spyOn(window, 'fetch').mockReturnValue(new Promise(() => {}))
-
-    const wrapper = mount(App)
-
-    expect(wrapper.text()).toContain('Loading')
+    expect(wrapper.text()).toContain('router-view-stub')
   })
 })
