@@ -68,3 +68,6 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### Claude Code ###
+.claude/agent-memory/

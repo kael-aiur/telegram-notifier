@@ -19,13 +19,20 @@ public class PythonTelegramRuntimeAutoConfiguration {
     }
 
     @Bean
-    @ConditionalOnMissingBean(TelegramAccountSessionManager.class)
+    @ConditionalOnMissingBean(TelegramClientFactory.class)
     @ConditionalOnProperty(prefix = "telegram.client", name = "mode", havingValue = "PYTHON_SUBPROCESS")
-    TelegramAccountSessionManager pythonTelegramAccountSessionManager(
+    TelegramClientFactory pythonTelegramClientFactory(
             TelegramClientProperties clientProperties,
             PythonTelegramRuntimeProperties runtimeProperties,
             ObjectMapper objectMapper
     ) {
-        return new PythonSubprocessTelegramAccountSessionManager(clientProperties, runtimeProperties, objectMapper);
+        return new DefaultTelegramClientFactory(clientProperties, runtimeProperties, objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(TelegramAccountSessionManager.class)
+    @ConditionalOnProperty(prefix = "telegram.client", name = "mode", havingValue = "PYTHON_SUBPROCESS")
+    TelegramAccountSessionManager pythonTelegramAccountSessionManager(TelegramClientFactory factory) {
+        return new PythonSubprocessTelegramAccountSessionManager(factory);
     }
 }

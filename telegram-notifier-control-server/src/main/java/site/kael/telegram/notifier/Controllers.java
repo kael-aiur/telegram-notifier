@@ -14,9 +14,12 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import site.kael.telegram.starter.TelegramAccountSessionManager;
 import site.kael.telegram.starter.TelegramConnectionStatus;
-import site.kael.telegram.starter.TelegramMessageEvent;
+import site.kael.telegram.starter.TelegramMessage;
+import site.kael.telegram.notifier.core.model.*;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 
@@ -295,15 +298,15 @@ class StatisticsController {
 @RestController
 @RequestMapping("/api/test")
 class TestMessageController {
-    private final TelegramAccountSessionManager sessions;
+    private final NotificationRuleService notifications;
 
-    TestMessageController(TelegramAccountSessionManager sessions) {
-        this.sessions = sessions;
+    TestMessageController(NotificationRuleService notifications) {
+        this.notifications = notifications;
     }
 
     @PostMapping("/messages")
     void publish(@RequestBody Map<String, Object> body) {
-        var event = new TelegramMessageEvent(
+        var message = new TelegramMessage(
                 longValue(body.get("accountId"), 1L),
                 longValue(body.get("chatId"), 1L),
                 longValue(body.get("messageId"), 0L),
@@ -312,10 +315,10 @@ class TestMessageController {
                 longValue(body.get("senderId"), 1L),
                 stringValue(body.get("senderName"), "sender"),
                 stringValue(body.get("senderUsername"), "sender"),
-                instantValue(body.get("receivedAt")),
+                localDateTimeValue(body.get("receivedAt")),
                 stringValue(body.get("text"), "")
         );
-        sessions.publishTestMessage(event);
+        notifications.handle(message);
     }
 
     private long longValue(Object value, long defaultValue) {
@@ -328,11 +331,11 @@ class TestMessageController {
         return defaultValue;
     }
 
-    private Instant instantValue(Object value) {
+    private LocalDateTime localDateTimeValue(Object value) {
         if (value instanceof String text && !text.isBlank()) {
-            return Instant.parse(text);
+            return Instant.parse(text).atZone(ZoneId.systemDefault()).toLocalDateTime();
         }
-        return Instant.now();
+        return LocalDateTime.now();
     }
 
     private String stringValue(Object value, String defaultValue) {

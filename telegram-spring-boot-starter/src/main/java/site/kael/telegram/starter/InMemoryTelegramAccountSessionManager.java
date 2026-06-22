@@ -6,9 +6,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * 进程内测试桩实现:不启动真实 Telegram,仅维护登录状态机与活动代理。
+ * {@link #peekUnreadMessages} 恒返回空列表(测试桩不模拟未读消息)。
+ */
 public class InMemoryTelegramAccountSessionManager implements TelegramAccountSessionManager {
     private final Map<Long, SessionState> sessions = new ConcurrentHashMap<>();
-    private final List<TelegramMessageListener> listeners = new CopyOnWriteArrayList<>();
     private final List<TelegramConnectionStatusListener> statusListeners = new CopyOnWriteArrayList<>();
 
     @Override
@@ -70,30 +73,13 @@ public class InMemoryTelegramAccountSessionManager implements TelegramAccountSes
     }
 
     @Override
-    public void scan(TelegramScanRequest request) {
-        var state = sessions.get(request.accountId());
-        if (state == null || state.authorizationState != AuthorizationState.READY || request.chatIds().isEmpty()) {
-            return;
-        }
-        for (Long chatId : request.chatIds()) {
-            publishTestMessage(new TelegramMessageEvent(request.accountId(), chatId == null ? 0L : chatId, 1L,
-                    "scan", "system", 0L, "scanner", "scanner", java.time.Instant.now(), ""));
-        }
-    }
-
-    @Override
-    public void subscribe(TelegramMessageListener listener) {
-        listeners.add(listener);
+    public List<TelegramMessage> peekUnreadMessages(long accountId, long chatId) {
+        return List.of();
     }
 
     @Override
     public void subscribeStatus(TelegramConnectionStatusListener listener) {
         statusListeners.add(listener);
-    }
-
-    @Override
-    public void publishTestMessage(TelegramMessageEvent event) {
-        listeners.forEach(listener -> listener.onMessage(event));
     }
 
     private List<ProxyConfig> enabledProxies(List<ProxyConfig> proxies) {
