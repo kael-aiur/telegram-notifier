@@ -51,3 +51,23 @@ export function getAccountProxies(accountId) {
 export function bindAccountProxies(accountId, proxyIds) {
   return api(`/accounts/${accountId}/proxies`, { method: 'PUT', body: JSON.stringify({ proxyIds }) })
 }
+
+export function submitScanSettings(id, data) {
+  return api(`/accounts/${id}/scan-settings`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function listNotifiedMessages(accountId, params = {}) {
+  const query = new URLSearchParams()
+  if (params.limit) query.set('limit', params.limit)
+  if (params.offset) query.set('offset', params.offset)
+  const qs = query.toString()
+  return api(`/accounts/${accountId}/notified-messages${qs ? '?' + qs : ''}`)
+}
+
+export function listMonitoringLogs(accountId, params = {}) {
+  const query = new URLSearchParams()
+  if (params.limit) query.set('limit', params.limit)
+  if (params.offset) query.set('offset', params.offset)
+  const qs = query.toString()
+  return api(`/accounts/${accountId}/monitoring-logs${qs ? '?' + qs : ''}`)
+}

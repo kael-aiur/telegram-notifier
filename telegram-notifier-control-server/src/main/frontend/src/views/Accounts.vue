@@ -7,7 +7,11 @@
     </div>
 
     <el-table :data="accounts" v-loading="loading" stripe>
-      <el-table-column prop="displayName" label="名称" min-width="120" />
+      <el-table-column label="名称" min-width="120">
+        <template #default="{ row }">
+          <router-link :to="`/accounts/${row.id}`" class="account-link">{{ row.displayName }}</router-link>
+        </template>
+      </el-table-column>
       <el-table-column prop="phoneNumber" label="电话" width="320" />
       <el-table-column label="授权状态" width="120" align="center">
         <template #default="{ row }">
@@ -30,20 +34,17 @@
       <el-table-column label="创建时间" width="180">
         <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <!-- 未就绪：只显示登录 -->
           <template v-if="row.authorizationState !== 'READY'">
             <el-button type="success" link @click="openLogin(row)">登录</el-button>
           </template>
-          <!-- 已就绪：显示启动/停止、重新登录 -->
+          <!-- 已就绪：显示停止/重新登录 -->
           <template v-else>
-            <el-button v-if="!row.running" type="warning" link @click="handleStart(row)">启动</el-button>
-            <el-button v-else type="info" link @click="handleStop(row)">停止</el-button>
+            <el-button v-if="row.running" type="info" link @click="handleStop(row)">停止</el-button>
             <el-button link @click="openLogin(row)">重新登录</el-button>
           </template>
-          <el-button type="primary" link @click="openEdit(row)">编辑</el-button>
-          <el-button type="danger" link @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -177,5 +178,13 @@ function formatTime(ts) {
 <style scoped>
 .table-header {
   margin-bottom: 16px;
+}
+.account-link {
+  color: #409eff;
+  text-decoration: none;
+  cursor: pointer;
+}
+.account-link:hover {
+  text-decoration: underline;
 }
 </style>
