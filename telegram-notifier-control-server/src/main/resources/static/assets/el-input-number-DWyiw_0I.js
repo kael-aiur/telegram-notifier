@@ -1,1 +1,0 @@
-import{K as o}from"./index-Qm71qvqI.js";function i(){return o("/proxies")}function n(r){return o("/proxies",{method:"POST",body:JSON.stringify(r)})}function s(r,e){return o(`/proxies/${r}`,{method:"PUT",body:JSON.stringify(e)})}function u(r){return o(`/proxies/${r}`,{method:"DELETE"})}export{n as c,u as d,i as l,s as u};

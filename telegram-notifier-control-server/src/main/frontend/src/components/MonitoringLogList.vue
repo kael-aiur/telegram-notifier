@@ -1,6 +1,13 @@
 <template>
   <el-card shadow="never">
-    <template #header><span>监控日志</span></template>
+    <template #header>
+      <div class="card-header">
+        <span>监控日志</span>
+        <el-button size="small" @click="fetchLogs">
+          <el-icon><Refresh /></el-icon>刷新
+        </el-button>
+      </div>
+    </template>
     <el-table :data="logs" v-loading="loading" stripe size="small">
       <el-table-column label="扫描时间" min-width="180">
         <template #default="{ row }">{{ formatTime(row.scannedAt) }}</template>
@@ -19,6 +26,7 @@
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { listMonitoringLogs } from '@/api/accounts'
 import { handleApiError } from '@/utils/error'
 
@@ -65,6 +73,11 @@ function formatTime(ts) {
 </script>
 
 <style scoped>
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 .pagination {
   display: flex;
   align-items: center;

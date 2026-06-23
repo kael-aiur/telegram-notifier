@@ -40,8 +40,8 @@
           </div>
         </el-card>
 
-        <MonitoringLogList :account-id="accountId" />
-        <WorkerLogList :account-id="accountId" style="margin-top: 16px" />
+        <WorkerLogList :account-id="accountId" />
+        <MonitoringLogList :account-id="accountId" style="margin-top: 16px" />
       </el-tab-pane>
 
       <!-- 设置 Tab -->
