@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 import java.util.logging.Logger;
 
 /**
@@ -29,6 +30,7 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     private final TelegramClientFactory factory;
     private final Map<Long, TelegramClient> clients = new ConcurrentHashMap<>();
     private final List<TelegramConnectionStatusListener> statusListeners = new CopyOnWriteArrayList<>();
+    private final List<BiConsumer<Long, String>> logListeners = new CopyOnWriteArrayList<>();
 
     public PythonSubprocessTelegramAccountSessionManager(TelegramClientFactory factory) {
         this.factory = Objects.requireNonNull(factory, "factory");
@@ -43,7 +45,13 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
         }
         TelegramClient client;
         try {
-            client = clients.computeIfAbsent(config.accountId(), id -> factory.create(config, this::forward));
+            client = clients.computeIfAbsent(config.accountId(), id -> {
+                var c = factory.create(config, this::forward);
+                if (c instanceof DefaultTelegramClient dtc) {
+                    dtc.setLogListener(msg -> forwardLog(id, msg));
+                }
+                return c;
+            });
         } catch (RuntimeException e) {
             return forward(new TelegramConnectionStatus(
                     config.accountId(), AuthorizationState.ERROR, activeProxyId(config.proxies()), safeError(e)));
@@ -135,6 +143,10 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
         statusListeners.add(listener);
     }
 
+    public void subscribeLogs(BiConsumer<Long, String> listener) {
+        logListeners.add(listener);
+    }
+
     @Override
     public void close() {
         clients.values().forEach(client -> {
@@ -158,6 +170,16 @@ public class PythonSubprocessTelegramAccountSessionManager implements TelegramAc
     private TelegramConnectionStatus forward(TelegramConnectionStatus status) {
         statusListeners.forEach(listener -> listener.onStatus(status));
         return status;
+    }
+
+    private void forwardLog(long accountId, String message) {
+        logListeners.forEach(listener -> {
+            try {
+                listener.accept(accountId, message);
+            } catch (RuntimeException ignored) {
+                // best-effort
+            }
+        });
     }
 
     private Long activeProxyId(List<ProxyConfig> proxies) {

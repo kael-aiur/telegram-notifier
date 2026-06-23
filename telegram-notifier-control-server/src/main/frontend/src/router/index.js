@@ -13,9 +13,9 @@ const routes = [
     children: [
       { path: '', redirect: '/accounts' },
       { path: 'accounts', name: 'Accounts', component: () => import('@/views/Accounts.vue') },
+      { path: 'accounts/:id', name: 'AccountDetail', component: () => import('@/views/AccountDetail.vue') },
       { path: 'channels', name: 'Channels', component: () => import('@/views/Channels.vue') },
       { path: 'proxies', name: 'Proxies', component: () => import('@/views/Proxies.vue') },
-      { path: 'rules', name: 'Rules', component: () => import('@/views/Rules.vue') },
     ],
   },
 ]

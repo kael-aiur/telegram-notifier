@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -137,10 +138,14 @@ class TelegramAccountController {
         return accounts.submitPassword(id, input.value());
     }
 
+    @SuppressWarnings("unchecked")
     @PutMapping("/{id}/scan-settings")
-    TelegramAccount updateScan(@PathVariable long id, @RequestBody Map<String, Long> body) {
-        return accounts.updateScan(id, body.getOrDefault("scanFrequencySeconds", 60L),
-                body.getOrDefault("unreadAgeThresholdSeconds", 3600L));
+    TelegramAccount updateScan(@PathVariable long id, @RequestBody Map<String, Object> body) {
+        long frequencySeconds = body.get("scanFrequencySeconds") instanceof Number n ? n.longValue() : 60L;
+        long unreadAgeSeconds = body.get("unreadAgeThresholdSeconds") instanceof Number n ? n.longValue() : 3600L;
+        List<Long> chatIds = body.get("monitoredChatIds") instanceof List<?> list ?
+                list.stream().filter(Number.class::isInstance).map(n -> ((Number) n).longValue()).toList() : null;
+        return accounts.updateScan(id, frequencySeconds, unreadAgeSeconds, chatIds);
     }
 }
 
@@ -246,37 +251,133 @@ class PushChannelController {
 }
 
 @RestController
-@RequestMapping("/api/rules")
-class NotificationRuleController {
+@RequestMapping("/api/accounts/{accountId}/rules")
+class AccountRuleController {
     private final NotificationRuleService rules;
+    private final TelegramAccountService accounts;
 
-    NotificationRuleController(NotificationRuleService rules) {
+    AccountRuleController(NotificationRuleService rules, TelegramAccountService accounts) {
         this.rules = rules;
+        this.accounts = accounts;
     }
 
     @GetMapping
-    List<NotificationRule> list() {
-        return rules.list();
+    List<NotificationRule> list(@PathVariable long accountId) {
+        accounts.get(accountId);
+        return rules.listByAccountId(accountId);
     }
 
     @PostMapping
-    NotificationRule create(@RequestBody NotificationRuleRequest request) {
-        return rules.create(request);
+    NotificationRule create(@PathVariable long accountId, @RequestBody NotificationRuleRequest request) {
+        accounts.get(accountId);
+        return rules.create(new NotificationRuleRequest(
+                accountId, request.name(), request.enabled(), request.sourceLabel(),
+                request.condition(), request.template(), request.channelIds()));
     }
 
     @GetMapping("/{id}")
-    NotificationRule get(@PathVariable long id) {
+    NotificationRule get(@PathVariable long accountId, @PathVariable long id) {
+        accounts.get(accountId);
         return rules.get(id);
     }
 
     @PutMapping("/{id}")
-    NotificationRule update(@PathVariable long id, @RequestBody NotificationRuleRequest request) {
-        return rules.update(id, request);
+    NotificationRule update(@PathVariable long accountId, @PathVariable long id,
+                            @RequestBody NotificationRuleRequest request) {
+        accounts.get(accountId);
+        return rules.update(id, new NotificationRuleRequest(
+                accountId, request.name(), request.enabled(), request.sourceLabel(),
+                request.condition(), request.template(), request.channelIds()));
     }
 
     @DeleteMapping("/{id}")
-    void delete(@PathVariable long id) {
+    void delete(@PathVariable long accountId, @PathVariable long id) {
+        accounts.get(accountId);
         rules.delete(id);
+    }
+}
+
+@RestController
+@RequestMapping("/api/accounts/{accountId}/notified-messages")
+class AccountNotifiedMessageController {
+    private final NotifiedTelegramMessageService notifiedMessages;
+    private final TelegramAccountService accounts;
+    private final NotificationRuleService rules;
+
+    AccountNotifiedMessageController(NotifiedTelegramMessageService notifiedMessages,
+                                     TelegramAccountService accounts,
+                                     NotificationRuleService rules) {
+        this.notifiedMessages = notifiedMessages;
+        this.accounts = accounts;
+        this.rules = rules;
+    }
+
+    @GetMapping
+    List<NotifiedMessageWithRulesResponse> list(@PathVariable long accountId,
+                                                @RequestParam(defaultValue = "50") int limit,
+                                                @RequestParam(defaultValue = "0") int offset) {
+        accounts.get(accountId);
+        var records = notifiedMessages.listByAccountId(accountId, limit, offset);
+        // Build rule name lookup from all rules for this account
+        var ruleNames = rules.listByAccountId(accountId).stream()
+                .collect(java.util.stream.Collectors.toMap(NotificationRule::id, NotificationRule::name));
+        return records.stream().map(r -> {
+            var matchedRules = r.matchedRuleIds().stream()
+                    .map(ruleId -> new RuleNameEntry(ruleId, ruleNames.getOrDefault(ruleId, "未知规则")))
+                    .toList();
+            return new NotifiedMessageWithRulesResponse(
+                    r.accountId(), r.chatId(), r.messageId(), r.notifiedAt(),
+                    matchedRules, r.deliveryResults());
+        }).toList();
+    }
+}
+
+@RestController
+@RequestMapping("/api/accounts/{accountId}/monitoring-logs")
+class AccountMonitoringLogController {
+    private final AccountMonitoringLogService monitoringLogs;
+    private final TelegramAccountService accounts;
+
+    AccountMonitoringLogController(AccountMonitoringLogService monitoringLogs, TelegramAccountService accounts) {
+        this.monitoringLogs = monitoringLogs;
+        this.accounts = accounts;
+    }
+
+    @GetMapping
+    List<MonitoringLogResponse> list(@PathVariable long accountId,
+                                     @RequestParam(defaultValue = "50") int limit,
+                                     @RequestParam(defaultValue = "0") int offset) {
+        accounts.get(accountId);
+        return monitoringLogs.listByAccountId(accountId, limit, offset).stream()
+                .map(l -> new MonitoringLogResponse(
+                        l.id(), l.accountId(), l.chatId(),
+                        l.scannedAt().toString(), l.unreadCount(), l.notifiedCount(),
+                        l.createdAt().toString()))
+                .toList();
+    }
+}
+
+@RestController
+@RequestMapping("/api/accounts/{accountId}/worker-logs")
+class AccountWorkerLogController {
+    private final AccountWorkerLogService workerLogs;
+    private final TelegramAccountService accounts;
+
+    AccountWorkerLogController(AccountWorkerLogService workerLogs, TelegramAccountService accounts) {
+        this.workerLogs = workerLogs;
+        this.accounts = accounts;
+    }
+
+    @GetMapping
+    List<WorkerLogResponse> list(@PathVariable long accountId,
+                                 @RequestParam(defaultValue = "100") int limit,
+                                 @RequestParam(defaultValue = "0") int offset) {
+        accounts.get(accountId);
+        return workerLogs.listByAccountId(accountId, limit, offset).stream()
+                .map(l -> new WorkerLogResponse(
+                        l.id(), l.accountId(), l.level(),
+                        l.message(), l.createdAt().toString()))
+                .toList();
     }
 }
 

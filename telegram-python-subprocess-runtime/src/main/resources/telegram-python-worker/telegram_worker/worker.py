@@ -189,13 +189,10 @@ class TelegramWorker:
         emit_reply(self.current_input_id, True, result={"count": emitted, "hasMore": False})
 
     def _unread_count(self, chat_id):
-        try:
-            for dialog in self.state.client.get_dialogs():
-                chat = getattr(dialog, "chat", None)
-                if int(getattr(chat, "id", 0) or 0) == chat_id:
-                    return int(getattr(dialog, "unread_messages_count", 0) or 0)
-        except Exception as exc:
-            log("Failed to read unread count for chat %s: %s" % (chat_id, safe_exception(exc, self._secrets())))
+        for dialog in self.state.client.get_dialogs():
+            chat = getattr(dialog, "chat", None)
+            if int(getattr(chat, "id", 0) or 0) == chat_id:
+                return int(getattr(dialog, "unread_messages_count", 0) or 0)
         return 0
 
     def ready(self):

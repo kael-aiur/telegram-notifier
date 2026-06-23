@@ -22,6 +22,7 @@ public class NotificationRuleDao {
         this.json = json;
         this.mapper = (rs, rowNum) -> new NotificationRule(
                 rs.getLong("id"),
+                rs.getLong("account_id"),
                 rs.getString("name"),
                 rs.getInt("enabled") == 1,
                 rs.getString("source_label"),
@@ -37,35 +38,39 @@ public class NotificationRuleDao {
         return jdbc.query("SELECT * FROM notification_rules ORDER BY id", mapper);
     }
 
+    public List<NotificationRule> selectByAccountId(long accountId) {
+        return jdbc.query("SELECT * FROM notification_rules WHERE account_id = ? ORDER BY id", mapper, accountId);
+    }
+
     public Optional<NotificationRule> selectById(long id) {
         return jdbc.query(
                 "SELECT * FROM notification_rules WHERE id = ?", mapper, id)
                 .stream().findFirst();
     }
 
-    public long insert(String name, boolean enabled, String sourceLabel,
+    public long insert(long accountId, String name, boolean enabled, String sourceLabel,
                        Map<String, Object> condition, String template,
                        List<Long> channelIds, String createdAt, String updatedAt) {
         jdbc.update("""
                 INSERT INTO notification_rules
-                    (name, enabled, source_label, condition_json, template,
+                    (account_id, name, enabled, source_label, condition_json, template,
                      channel_ids_json, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?)
-                """, name, enabled ? 1 : 0, sourceLabel,
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """, accountId, name, enabled ? 1 : 0, sourceLabel,
                 json.write(condition), template, json.write(channelIds),
                 createdAt, updatedAt);
         return jdbc.queryForObject("SELECT last_insert_rowid()", Long.class);
     }
 
-    public void update(long id, String name, boolean enabled, String sourceLabel,
+    public void update(long id, long accountId, String name, boolean enabled, String sourceLabel,
                        Map<String, Object> condition, String template,
                        List<Long> channelIds, String updatedAt) {
         jdbc.update("""
                 UPDATE notification_rules
-                SET name = ?, enabled = ?, source_label = ?, condition_json = ?,
+                SET account_id = ?, name = ?, enabled = ?, source_label = ?, condition_json = ?,
                     template = ?, channel_ids_json = ?, updated_at = ?
                 WHERE id = ?
-                """, name, enabled ? 1 : 0, sourceLabel,
+                """, accountId, name, enabled ? 1 : 0, sourceLabel,
                 json.write(condition), template, json.write(channelIds),
                 updatedAt, id);
     }

@@ -43,6 +43,8 @@ class ControlServerIntegrationTest {
 
     @BeforeEach
     void resetDatabase() {
+        jdbc.execute("delete from account_worker_logs");
+        jdbc.execute("delete from account_monitoring_logs");
         jdbc.execute("delete from account_proxies");
         jdbc.execute("delete from proxy_servers");
         jdbc.execute("delete from notified_telegram_messages");
@@ -147,11 +149,11 @@ class ControlServerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.config.deviceKey").value("******"));
 
-        mvc.perform(post("/api/rules")
+        mvc.perform(post("/api/accounts/1/rules")
                         .header("X-Auth-Token", token)
                         .contentType("application/json")
                         .content("""
-                                {"name":"server notice","enabled":true,"sourceLabel":"服务器","condition":{"field":"text","op":"contains","value":"alarm"},"template":"{{receivedAt}} 收到来自{{sourceLabel}}的通知消息","channelIds":[1]}
+                                {"accountId":1,"name":"server notice","enabled":true,"sourceLabel":"服务器","condition":{"field":"text","op":"contains","value":"alarm"},"template":"{{receivedAt}} 收到来自{{sourceLabel}}的通知消息","channelIds":[1]}
                                 """))
                 .andExpect(status().isOk());
 
@@ -203,11 +205,11 @@ class ControlServerIntegrationTest {
                                 """))
                 .andExpect(status().isOk());
 
-        mvc.perform(post("/api/rules")
+        mvc.perform(post("/api/accounts/1/rules")
                         .header("X-Auth-Token", token)
                         .contentType("application/json")
                         .content("""
-                                {"name":"chat rule","enabled":true,"sourceLabel":"Telegram","condition":{"field":"chatId","op":"equals","value":"42"},"template":"{{messageId}} {{text}}","channelIds":[1]}
+                                {"accountId":1,"name":"chat rule","enabled":true,"sourceLabel":"Telegram","condition":{"field":"chatId","op":"equals","value":"42"},"template":"{{messageId}} {{text}}","channelIds":[1]}
                                 """))
                 .andExpect(status().isOk());
 

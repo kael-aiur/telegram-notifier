@@ -1,6 +1,7 @@
 package site.kael.telegram.notifier.core.model;
 
 import java.time.Instant;
+import java.util.List;
 
 public record TelegramAccount(
         long id,
@@ -13,6 +14,7 @@ public record TelegramAccount(
         long scanFrequencySeconds,
         long unreadAgeThresholdSeconds,
         boolean running,
+        List<Long> monitoredChatIds,
         Instant createdAt,
         Instant updatedAt
 ) {

@@ -19,10 +19,6 @@
           <el-icon><Connection /></el-icon>
           <span>网络代理</span>
         </el-menu-item>
-        <el-menu-item index="/rules">
-          <el-icon><List /></el-icon>
-          <span>推送规则</span>
-        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -41,7 +37,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Bell, Connection, List } from '@element-plus/icons-vue'
+import { User, Bell, Connection } from '@element-plus/icons-vue'
 import { logout, setToken } from '@/api/auth'
 import { ElMessage } from 'element-plus'
 
@@ -53,8 +49,8 @@ const routeTitle = computed(() => {
     '/accounts': '账号管理',
     '/channels': '推送通道',
     '/proxies': '网络代理',
-    '/rules': '推送规则',
   }
+  if (route.path.startsWith('/accounts/')) return '账号详情'
   return titles[route.path] || 'Telegram Notifier'
 })
 

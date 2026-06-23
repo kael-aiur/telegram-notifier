@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -32,14 +33,14 @@ class NotificationRuleServiceTest {
         var notifiedMessages = mock(NotifiedTelegramMessageService.class);
 
         // 单条规则:text contains "alarm"
-        var rule = new NotificationRule(1L, "alarm rule", true, "Telegram",
+        var rule = new NotificationRule(1L, 1L, "alarm rule", true, "Telegram",
                 Map.of("field", "text", "op", "contains", "value", "alarm"),
                 "{{messageId}}", List.of(7L), Instant.now(), Instant.now());
-        when(ruleDao.selectAll()).thenReturn(List.of(rule));
+        when(ruleDao.selectByAccountId(1L)).thenReturn(List.of(rule));
 
         // 阈值 60s,消息都足够老(120s 前),避免年龄阈值成为过滤因素
         var account = new TelegramAccount(1L, "main", "+1", true, "READY",
-                null, null, 60L, 60L, true, Instant.now(), Instant.now());
+                null, null, 60L, 60L, true, List.of(42L), Instant.now(), Instant.now());
         when(accounts.find(1L)).thenReturn(Optional.of(account));
 
         when(notifiedMessages.isNotified(any())).thenReturn(false);
@@ -65,7 +66,7 @@ class NotificationRuleServiceTest {
         // 核心不变量:一批至多一次推送
         verify(channels, times(1)).send(any(), anyString());
         // 整批全部 remember(含不命中的)
-        verify(notifiedMessages, times(4)).remember(any());
+        verify(notifiedMessages, times(4)).remember(any(), anyList(), anyList());
     }
 
     private TelegramMessage msg(long messageId, String text, LocalDateTime receivedAt) {

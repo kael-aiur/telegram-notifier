@@ -85,6 +85,10 @@ import { handleApiError } from '@/utils/error'
 const props = defineProps({
   modelValue: Boolean,
   record: Object,
+  accountId: {
+    type: [String, Number],
+    required: true,
+  },
 })
 const emit = defineEmits(['update:modelValue', 'saved'])
 
@@ -179,6 +183,7 @@ async function handleSave() {
     }
 
     const data = {
+      accountId: Number(props.accountId),
       name: form.name,
       enabled: form.enabled,
       sourceLabel: form.sourceLabel,
@@ -188,10 +193,10 @@ async function handleSave() {
     }
 
     if (isEdit.value) {
-      await updateRule(props.record.id, data)
+      await updateRule(props.accountId, props.record.id, data)
       ElMessage.success('规则更新成功')
     } else {
-      await createRule(data)
+      await createRule(props.accountId, data)
       ElMessage.success('规则创建成功')
     }
     emit('saved')
