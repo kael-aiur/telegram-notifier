@@ -2,9 +2,11 @@ package site.kael.telegram.notifier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -23,6 +25,7 @@ import site.kael.telegram.notifier.core.support.JsonSupport;
 import site.kael.telegram.notifier.core.support.ValidationSupport;
 
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -290,13 +293,35 @@ class ProxyService {
 
 @Service
 class PushChannelService {
+    private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(10);
+
     private final PushChannelDao channelDao;
     private final NotificationRuleDao ruleDao;
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
 
+    @Autowired
     PushChannelService(PushChannelDao channelDao, NotificationRuleDao ruleDao) {
+        this(channelDao, ruleDao, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT);
+    }
+
+    // 可注入超时,供测试用短超时驱动验证(生产用上面的默认值)
+    PushChannelService(PushChannelDao channelDao, NotificationRuleDao ruleDao,
+                       Duration connectTimeout, Duration readTimeout) {
         this.channelDao = channelDao;
         this.ruleDao = ruleDao;
+        this.restClient = buildRestClient(connectTimeout, readTimeout);
+    }
+
+    // 必须同时设置 connect(连接阶段) 与 read(等待响应) 超时,任一缺失都会在网络抖动/
+    // 死连接时永久阻塞,冻结调用方(如单线程的未读扫描调度器)。
+    private static RestClient buildRestClient(Duration connectTimeout, Duration readTimeout) {
+        var httpClient = HttpClient.newBuilder()
+                .connectTimeout(connectTimeout)
+                .build();
+        var requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(readTimeout);
+        return RestClient.builder().requestFactory(requestFactory).build();
     }
 
     List<PushChannel> list() {
