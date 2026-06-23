@@ -420,6 +420,25 @@ class AccountMonitoringLogService {
 }
 
 @Service
+class AccountWorkerLogService {
+    private final AccountWorkerLogDao workerLogDao;
+
+    AccountWorkerLogService(AccountWorkerLogDao workerLogDao) {
+        this.workerLogDao = workerLogDao;
+    }
+
+    void capture(long accountId, String message) {
+        var now = Instant.now().toString();
+        workerLogDao.insert(accountId, "INFO", message, now);
+        workerLogDao.deleteOldestBeyond(accountId, 1000);
+    }
+
+    List<AccountWorkerLog> listByAccountId(long accountId, int limit, int offset) {
+        return workerLogDao.selectByAccountId(accountId, limit, offset);
+    }
+}
+
+@Service
 class NotificationRuleService {
     private static final Logger log = LoggerFactory.getLogger(NotificationRuleService.class);
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");

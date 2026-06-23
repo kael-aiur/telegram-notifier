@@ -358,6 +358,30 @@ class AccountMonitoringLogController {
 }
 
 @RestController
+@RequestMapping("/api/accounts/{accountId}/worker-logs")
+class AccountWorkerLogController {
+    private final AccountWorkerLogService workerLogs;
+    private final TelegramAccountService accounts;
+
+    AccountWorkerLogController(AccountWorkerLogService workerLogs, TelegramAccountService accounts) {
+        this.workerLogs = workerLogs;
+        this.accounts = accounts;
+    }
+
+    @GetMapping
+    List<WorkerLogResponse> list(@PathVariable long accountId,
+                                 @RequestParam(defaultValue = "100") int limit,
+                                 @RequestParam(defaultValue = "0") int offset) {
+        accounts.get(accountId);
+        return workerLogs.listByAccountId(accountId, limit, offset).stream()
+                .map(l -> new WorkerLogResponse(
+                        l.id(), l.accountId(), l.level(),
+                        l.message(), l.createdAt().toString()))
+                .toList();
+    }
+}
+
+@RestController
 @RequestMapping("/api/statistics")
 class StatisticsController {
     private final StatisticsService statistics;

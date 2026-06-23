@@ -102,3 +102,12 @@ record MonitoringLogResponse(
         String createdAt
 ) {
 }
+
+record WorkerLogResponse(
+        long id,
+        long accountId,
+        String level,
+        String message,
+        String createdAt
+) {
+}

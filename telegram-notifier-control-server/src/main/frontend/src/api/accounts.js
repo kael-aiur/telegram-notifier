@@ -71,3 +71,11 @@ export function listMonitoringLogs(accountId, params = {}) {
   const qs = query.toString()
   return api(`/accounts/${accountId}/monitoring-logs${qs ? '?' + qs : ''}`)
 }
+
+export function listWorkerLogs(accountId, params = {}) {
+  const query = new URLSearchParams()
+  if (params.limit) query.set('limit', params.limit)
+  if (params.offset) query.set('offset', params.offset)
+  const qs = query.toString()
+  return api(`/accounts/${accountId}/worker-logs${qs ? '?' + qs : ''}`)
+}

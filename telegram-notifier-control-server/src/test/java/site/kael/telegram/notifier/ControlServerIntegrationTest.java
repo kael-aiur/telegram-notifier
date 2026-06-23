@@ -43,6 +43,7 @@ class ControlServerIntegrationTest {
 
     @BeforeEach
     void resetDatabase() {
+        jdbc.execute("delete from account_worker_logs");
         jdbc.execute("delete from account_monitoring_logs");
         jdbc.execute("delete from account_proxies");
         jdbc.execute("delete from proxy_servers");

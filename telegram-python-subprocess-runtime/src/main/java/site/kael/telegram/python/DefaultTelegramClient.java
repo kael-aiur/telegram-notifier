@@ -55,6 +55,7 @@ public class DefaultTelegramClient implements TelegramClient {
     private volatile String errorMessage;
     private volatile boolean startSent;
     private volatile boolean closed;
+    private volatile Consumer<String> logListener;
 
     public DefaultTelegramClient(TelegramSession session, TelegramClientConfig config,
                                  TelegramSessionConfig sessionConfig, ObjectMapper objectMapper) {
@@ -109,6 +110,11 @@ public class DefaultTelegramClient implements TelegramClient {
     /** 当前错误信息(已脱敏),诊断用。 */
     public String errorMessage() {
         return errorMessage;
+    }
+
+    /** 设置日志监听器,接收 Python worker 的日志消息(已脱敏)。 */
+    public void setLogListener(Consumer<String> logListener) {
+        this.logListener = logListener;
     }
 
     @Override
@@ -322,7 +328,16 @@ public class DefaultTelegramClient implements TelegramClient {
         var message = (content != null && content.isObject())
                 ? TelegramProtocolEnvelope.text(content, "message")
                 : (content == null ? "" : content.asText());
-        LOGGER.info(() -> "telegram python worker: " + sanitize(message));
+        var sanitized = sanitize(message);
+        LOGGER.info(() -> "telegram python worker: " + sanitized);
+        var listener = logListener;
+        if (listener != null) {
+            try {
+                listener.accept(sanitized);
+            } catch (RuntimeException ignored) {
+                // best-effort
+            }
+        }
         // SubprocessTelegramSession 在子进程异常退出时会发布该日志;据此置 ERROR 并解锁所有等待,
         // 使进行中的命令(如 start)不会一直阻塞到超时。
         if (message != null && message.startsWith("Python worker exited unexpectedly")) {

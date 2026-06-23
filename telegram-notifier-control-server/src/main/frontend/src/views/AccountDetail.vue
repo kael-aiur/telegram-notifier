@@ -41,6 +41,7 @@
         </el-card>
 
         <MonitoringLogList :account-id="accountId" />
+        <WorkerLogList :account-id="accountId" style="margin-top: 16px" />
       </el-tab-pane>
 
       <!-- 设置 Tab -->
@@ -160,6 +161,7 @@ import { handleApiError } from '@/utils/error'
 import RuleDialog from '@/components/RuleDialog.vue'
 import MonitoringLogList from '@/components/MonitoringLogList.vue'
 import NotifiedMessageList from '@/components/NotifiedMessageList.vue'
+import WorkerLogList from '@/components/WorkerLogList.vue'
 
 const route = useRoute()
 const router = useRouter()
