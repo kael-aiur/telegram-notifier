@@ -6,6 +6,7 @@ import java.util.Map;
 
 public record NotificationRule(
         long id,
+        long accountId,
         String name,
         boolean enabled,
         String sourceLabel,

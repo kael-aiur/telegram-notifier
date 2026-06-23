@@ -4,6 +4,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import site.kael.telegram.notifier.core.model.TelegramAccount;
+import site.kael.telegram.notifier.core.support.JsonSupport;
 
 import java.time.Instant;
 import java.util.List;
@@ -12,10 +13,12 @@ import java.util.Optional;
 @Repository
 public class TelegramAccountDao {
     private final JdbcTemplate jdbc;
+    private final JsonSupport json;
     private final RowMapper<TelegramAccount> mapper;
 
-    public TelegramAccountDao(JdbcTemplate jdbc) {
+    public TelegramAccountDao(JdbcTemplate jdbc, JsonSupport json) {
         this.jdbc = jdbc;
+        this.json = json;
         this.mapper = (rs, rowNum) -> new TelegramAccount(
                 rs.getLong("id"),
                 rs.getString("display_name"),
@@ -27,6 +30,7 @@ public class TelegramAccountDao {
                 rs.getLong("scan_frequency_seconds"),
                 rs.getLong("unread_age_threshold_seconds"),
                 rs.getInt("running") == 1,
+                json.readLongList(rs.getString("monitored_chat_ids_json")),
                 Instant.parse(rs.getString("created_at")),
                 Instant.parse(rs.getString("updated_at"))
         );
@@ -110,6 +114,14 @@ public class TelegramAccountDao {
                 SET running = ?, updated_at = ?
                 WHERE id = ?
                 """, running ? 1 : 0, updatedAt, id);
+    }
+
+    public void updateMonitoredChatIds(long id, List<Long> chatIds, String updatedAt) {
+        jdbc.update("""
+                UPDATE telegram_accounts
+                SET monitored_chat_ids_json = ?, updated_at = ?
+                WHERE id = ?
+                """, json.write(chatIds), updatedAt, id);
     }
 
     private Long nullableLong(Object value) {

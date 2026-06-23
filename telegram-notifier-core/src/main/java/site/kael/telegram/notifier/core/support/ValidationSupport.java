@@ -15,6 +15,13 @@ public final class ValidationSupport {
         return value.trim();
     }
 
+    public static long requirePositive(Long value, String field) {
+        if (value == null || value <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is required and must be positive");
+        }
+        return value;
+    }
+
     public static boolean bool(Boolean value, boolean defaultValue) {
         return value == null ? defaultValue : value;
     }
