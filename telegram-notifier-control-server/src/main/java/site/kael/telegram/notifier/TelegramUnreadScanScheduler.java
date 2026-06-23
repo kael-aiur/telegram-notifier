@@ -29,6 +29,7 @@ class TelegramUnreadScanScheduler {
     private final AccountMonitoringLogDao monitoringLogDao;
     private final MonitoringLogProperties monitoringLogProperties;
     private final Map<Long, Instant> lastScans = new ConcurrentHashMap<>();
+    private final Map<Long, Instant> lastRecoveryAttempts = new ConcurrentHashMap<>();
 
     TelegramUnreadScanScheduler(TelegramAccountService accounts,
                                 TelegramAccountSessionManager sessions,
@@ -46,7 +47,17 @@ class TelegramUnreadScanScheduler {
     void scanDueAccounts() {
         var now = Instant.now();
         for (TelegramAccount account : accounts.list()) {
-            if (!account.enabled() || !AuthorizationState.READY.name().equals(account.authorizationState())) {
+            if (!account.enabled()) {
+                continue;
+            }
+
+            // 自动恢复 ERROR 状态的账号
+            if (AuthorizationState.ERROR.name().equals(account.authorizationState())) {
+                tryRecover(account, now);
+                continue;
+            }
+
+            if (!AuthorizationState.READY.name().equals(account.authorizationState())) {
                 continue;
             }
             var chatIds = account.monitoredChatIds();
@@ -71,6 +82,24 @@ class TelegramUnreadScanScheduler {
                         unreadCount, notifiedCount, scannedAt);
                 monitoringLogDao.deleteOldestBeyond(account.id(), monitoringLogProperties.getMaxPerAccount());
             }
+        }
+    }
+
+    private void tryRecover(TelegramAccount account, Instant now) {
+        // 限制恢复频率：每 5 分钟最多尝试一次
+        var lastAttempt = lastRecoveryAttempts.get(account.id());
+        if (lastAttempt != null && Duration.between(lastAttempt, now).getSeconds() < 300) {
+            return;
+        }
+        lastRecoveryAttempts.put(account.id(), now);
+        log.info("尝试恢复 ERROR 状态的账号 {} ({})", account.id(), account.displayName());
+        try {
+            accounts.stop(account.id());
+            accounts.start(account.id());
+            log.info("账号 {} ({}) 恢复成功", account.id(), account.displayName());
+            lastRecoveryAttempts.remove(account.id());
+        } catch (Exception e) {
+            log.warn("账号 {} ({}) 恢复失败: {}", account.id(), account.displayName(), e.getMessage());
         }
     }
 }
