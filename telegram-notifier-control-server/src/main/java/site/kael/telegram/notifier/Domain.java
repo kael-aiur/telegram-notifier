@@ -1,5 +1,7 @@
 package site.kael.telegram.notifier;
 
+import site.kael.telegram.notifier.core.model.DeliveryResultEntry;
+
 import java.util.List;
 import java.util.Map;
 
@@ -22,7 +24,8 @@ record TelegramAccountRequest(
         String phoneNumber,
         Boolean enabled,
         Long scanFrequencySeconds,
-        Long unreadAgeThresholdSeconds
+        Long unreadAgeThresholdSeconds,
+        List<Long> monitoredChatIds
 ) {
 }
 
@@ -56,11 +59,46 @@ record PushChannelRequest(
 }
 
 record NotificationRuleRequest(
+        Long accountId,
         String name,
         Boolean enabled,
         String sourceLabel,
         Map<String, Object> condition,
         String template,
         List<Long> channelIds
+) {
+}
+
+record NotifiedMessageResponse(
+        long accountId,
+        long chatId,
+        long messageId,
+        String notifiedAt,
+        List<Long> matchedRuleIds,
+        List<DeliveryResultEntry> deliveryResults
+) {
+}
+
+record NotifiedMessageWithRulesResponse(
+        long accountId,
+        long chatId,
+        long messageId,
+        String notifiedAt,
+        List<RuleNameEntry> matchedRules,
+        List<DeliveryResultEntry> deliveryResults
+) {
+}
+
+record RuleNameEntry(long id, String name) {
+}
+
+record MonitoringLogResponse(
+        long id,
+        long accountId,
+        long chatId,
+        String scannedAt,
+        int unreadCount,
+        int notifiedCount,
+        String createdAt
 ) {
 }

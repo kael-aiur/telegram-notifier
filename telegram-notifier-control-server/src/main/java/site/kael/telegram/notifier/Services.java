@@ -19,6 +19,7 @@ import site.kael.telegram.starter.TelegramConnectionStatus;
 import site.kael.telegram.starter.TelegramMessage;
 import site.kael.telegram.notifier.core.dao.*;
 import site.kael.telegram.notifier.core.model.*;
+import site.kael.telegram.notifier.core.support.JsonSupport;
 import site.kael.telegram.notifier.core.support.ValidationSupport;
 
 import java.net.URI;
@@ -187,12 +188,16 @@ class TelegramAccountService {
         return status;
     }
 
-    TelegramAccount updateScan(long id, long frequencySeconds, long unreadAgeSeconds) {
+    TelegramAccount updateScan(long id, long frequencySeconds, long unreadAgeSeconds, List<Long> chatIds) {
         get(id);
+        var now = Instant.now().toString();
         accountDao.updateScanSettings(id,
                 ValidationSupport.positive(frequencySeconds, 60),
                 ValidationSupport.positive(unreadAgeSeconds, 3600),
-                Instant.now().toString());
+                now);
+        if (chatIds != null) {
+            accountDao.updateMonitoredChatIds(id, chatIds, now);
+        }
         return get(id);
     }
 
@@ -368,9 +373,11 @@ class PushChannelService {
 @Service
 class NotifiedTelegramMessageService {
     private final NotifiedMessageDao notifiedMessageDao;
+    private final JsonSupport json;
 
-    NotifiedTelegramMessageService(NotifiedMessageDao notifiedMessageDao) {
+    NotifiedTelegramMessageService(NotifiedMessageDao notifiedMessageDao, JsonSupport json) {
         this.notifiedMessageDao = notifiedMessageDao;
+        this.json = json;
     }
 
     boolean isNotified(TelegramMessage event) {
@@ -380,15 +387,35 @@ class NotifiedTelegramMessageService {
         return notifiedMessageDao.exists(event.accountId(), event.chatId(), event.messageId());
     }
 
-    void remember(TelegramMessage event) {
+    void remember(TelegramMessage event, List<Long> matchedRuleIds, List<DeliveryResultEntry> deliveryResults) {
         if (!hasMessageIdentity(event)) {
             return;
         }
-        notifiedMessageDao.insert(event.accountId(), event.chatId(), event.messageId(), Instant.now().toString());
+        notifiedMessageDao.insert(event.accountId(), event.chatId(), event.messageId(),
+                Instant.now().toString(),
+                matchedRuleIds.isEmpty() ? null : json.write(matchedRuleIds),
+                deliveryResults.isEmpty() ? null : json.write(deliveryResults));
+    }
+
+    List<NotifiedMessageRecord> listByAccountId(long accountId, int limit, int offset) {
+        return notifiedMessageDao.selectByAccountId(accountId, limit, offset);
     }
 
     private boolean hasMessageIdentity(TelegramMessage event) {
         return event.messageId() > 0;
+    }
+}
+
+@Service
+class AccountMonitoringLogService {
+    private final AccountMonitoringLogDao monitoringLogDao;
+
+    AccountMonitoringLogService(AccountMonitoringLogDao monitoringLogDao) {
+        this.monitoringLogDao = monitoringLogDao;
+    }
+
+    List<AccountMonitoringLog> listByAccountId(long accountId, int limit, int offset) {
+        return monitoringLogDao.selectByAccountId(accountId, limit, offset);
     }
 }
 
@@ -415,6 +442,10 @@ class NotificationRuleService {
         return ruleDao.selectAll();
     }
 
+    List<NotificationRule> listByAccountId(long accountId) {
+        return ruleDao.selectByAccountId(accountId);
+    }
+
     NotificationRule get(long id) {
         return ruleDao.selectById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "rule not found"));
@@ -422,7 +453,8 @@ class NotificationRuleService {
 
     NotificationRule create(NotificationRuleRequest request) {
         var now = Instant.now().toString();
-        long id = ruleDao.insert(
+        long accountId = ValidationSupport.requirePositive(request.accountId(), "accountId");
+        long id = ruleDao.insert(accountId,
                 ValidationSupport.requireText(request.name(), "name"),
                 ValidationSupport.bool(request.enabled(), true),
                 ValidationSupport.defaultText(request.sourceLabel(), "服务器"),
@@ -435,7 +467,8 @@ class NotificationRuleService {
 
     NotificationRule update(long id, NotificationRuleRequest request) {
         get(id);
-        ruleDao.update(id,
+        long accountId = ValidationSupport.requirePositive(request.accountId(), "accountId");
+        ruleDao.update(id, accountId,
                 ValidationSupport.requireText(request.name(), "name"),
                 ValidationSupport.bool(request.enabled(), true),
                 ValidationSupport.defaultText(request.sourceLabel(), "服务器"),
@@ -456,10 +489,11 @@ class NotificationRuleService {
                 return;
             }
         }
-        var matched = false;
         statistics.incrementMessages(event.accountId());
-        for (NotificationRule rule : list().stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
-            matched = true;
+        var matchedRuleIds = new java.util.ArrayList<Long>();
+        var deliveryResults = new java.util.ArrayList<DeliveryResultEntry>();
+        for (NotificationRule rule : ruleDao.selectByAccountId(event.accountId()).stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
+            matchedRuleIds.add(rule.id());
             statistics.incrementRuleHit(rule.id());
             var content = render(rule, event);
             for (Long channelId : rule.channelIds()) {
@@ -468,19 +502,23 @@ class NotificationRuleService {
                     channel = channels.get(channelId);
                 } catch (Exception e) {
                     log.warn("channel not found by id: {} for rule {}(id: {})", channelId, rule.name(), rule.id());
+                    deliveryResults.add(new DeliveryResultEntry(rule.id(), channelId, false, "channel not found"));
                     continue;
                 }
                 var result = channels.send(channel, content);
                 statistics.recordDelivery(rule.id(), channelId, result.success(), result.message());
+                deliveryResults.add(new DeliveryResultEntry(rule.id(), channelId, result.success(), result.message()));
             }
         }
-        if (matched) {
-            notifiedMessages.remember(event);
+        if (!matchedRuleIds.isEmpty()) {
+            notifiedMessages.remember(event, matchedRuleIds, deliveryResults);
         }
     }
 
-    void handleBatch(List<TelegramMessage> messages) {
+    int handleBatch(List<TelegramMessage> messages) {
         var pushed = false;
+        var sharedDeliveryResults = new java.util.ArrayList<DeliveryResultEntry>();
+        var sharedMatchedRuleIds = new java.util.ArrayList<Long>();
         for (var event : messages) {
             if (pushed) {
                 break;
@@ -490,10 +528,11 @@ class NotificationRuleService {
                     continue;
                 }
             }
-            var matched = false;
             statistics.incrementMessages(event.accountId());
-            for (NotificationRule rule : list().stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
-                matched = true;
+            for (NotificationRule rule : ruleDao.selectByAccountId(event.accountId()).stream().filter(NotificationRule::enabled).filter(rule -> matches(rule.condition(), event)).toList()) {
+                if (!pushed) {
+                    sharedMatchedRuleIds.add(rule.id());
+                }
                 statistics.incrementRuleHit(rule.id());
                 var content = render(rule, event);
                 for (Long channelId : rule.channelIds()) {
@@ -502,21 +541,31 @@ class NotificationRuleService {
                         channel = channels.get(channelId);
                     } catch (Exception e) {
                         log.warn("channel not found by id: {} for rule {}(id: {})", channelId, rule.name(), rule.id());
+                        if (!pushed) {
+                            sharedDeliveryResults.add(new DeliveryResultEntry(rule.id(), channelId, false, "channel not found"));
+                        }
                         continue;
                     }
                     var result = channels.send(channel, content);
                     statistics.recordDelivery(rule.id(), channelId, result.success(), result.message());
+                    if (!pushed) {
+                        sharedDeliveryResults.add(new DeliveryResultEntry(rule.id(), channelId, result.success(), result.message()));
+                    }
                 }
             }
-            if (matched) {
+            if (!sharedMatchedRuleIds.isEmpty()) {
                 pushed = true;
             }
         }
         if (pushed) {
+            int remembered = 0;
             for (var event : messages) {
-                notifiedMessages.remember(event);
+                notifiedMessages.remember(event, sharedMatchedRuleIds, sharedDeliveryResults);
+                remembered++;
             }
+            return remembered;
         }
+        return 0;
     }
 
     private boolean isOldEnough(TelegramMessage event) {
