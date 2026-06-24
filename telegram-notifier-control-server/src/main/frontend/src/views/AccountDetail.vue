@@ -75,7 +75,17 @@
         </el-card>
 
         <el-card shadow="never" class="settings-section">
-          <template #header><span>监听会话</span></template>
+          <template #header><span>扫描设置</span></template>
+          <el-form :model="account" label-width="100px" style="max-width: 500px">
+            <el-form-item label="扫描频率(秒)">
+              <el-input-number v-model="account.scanFrequencySeconds" :min="1" :step-strictly="true" style="width: 100%" />
+            </el-form-item>
+            <el-form-item label="未读时长(秒)">
+              <el-input-number v-model="account.unreadAgeThresholdSeconds" :min="1" :step-strictly="true" style="width: 100%" />
+            </el-form-item>
+          </el-form>
+
+          <el-divider content-position="left" style="margin: 8px 0 12px">监听会话</el-divider>
           <div v-for="(chatId, index) in chatIdList" :key="index" class="chat-id-row">
             <el-input-number v-model="chatIdList[index]" :min="1" :controls="false" style="width: 300px" />
             <el-button type="danger" link @click="chatIdList.splice(index, 1)">
@@ -86,7 +96,7 @@
             <el-icon><Plus /></el-icon>添加会话
           </el-button>
           <div style="margin-top: 12px">
-            <el-button type="primary" :loading="savingChatIds" @click="handleSaveChatIds">保存监听会话</el-button>
+            <el-button type="primary" :loading="savingScanSettings" @click="handleSaveScanSettings">保存扫描设置</el-button>
           </div>
         </el-card>
 
@@ -182,7 +192,7 @@ const savingProxies = ref(false)
 
 // Chat IDs
 const chatIdList = ref([])
-const savingChatIds = ref(false)
+const savingScanSettings = ref(false)
 
 // Rules
 const rules = ref([])
@@ -297,21 +307,27 @@ async function handleSaveProxies() {
   }
 }
 
-async function handleSaveChatIds() {
-  savingChatIds.value = true
+async function handleSaveScanSettings() {
+  const freq = Number(account.value.scanFrequencySeconds)
+  const threshold = Number(account.value.unreadAgeThresholdSeconds)
+  if (!Number.isInteger(freq) || freq < 1 || !Number.isInteger(threshold) || threshold < 1) {
+    ElMessage.error('扫描频率与未读时长必须为不小于 1 的整数')
+    return
+  }
+  savingScanSettings.value = true
   try {
     const validIds = chatIdList.value.filter(id => id > 0)
     await submitScanSettings(accountId.value, {
-      scanFrequencySeconds: account.value.scanFrequencySeconds,
-      unreadAgeThresholdSeconds: account.value.unreadAgeThresholdSeconds,
+      scanFrequencySeconds: freq,
+      unreadAgeThresholdSeconds: threshold,
       monitoredChatIds: validIds,
     })
-    ElMessage.success('监听会话已保存')
+    ElMessage.success('扫描设置已保存')
     await fetchAccount()
   } catch (e) {
     handleApiError(e)
   } finally {
-    savingChatIds.value = false
+    savingScanSettings.value = false
   }
 }
 
