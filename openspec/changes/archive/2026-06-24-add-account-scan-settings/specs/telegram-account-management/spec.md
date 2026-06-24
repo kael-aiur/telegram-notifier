@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Account scan settings are configurable
 The system SHALL allow each Telegram account to configure scan frequency, unread age threshold, and the set of monitored chatIds to scan for unread messages. Monitored chatIds SHALL be stored as account data and maintained at runtime through the account API; the system MUST NOT rely on a configuration file to supply per-account monitored chatIds. 账户详情页的「设置」标签 SHALL 为扫描频率与未读时长提供可编辑入口，使管理员可在账户创建之后继续调整这两项，并随监听会话一并通过 scan-settings API 持久化。
