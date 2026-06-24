@@ -16,11 +16,11 @@
       <el-form-item label="启用">
         <el-switch v-model="form.enabled" />
       </el-form-item>
-      <el-form-item label="扫描间隔(秒)">
-        <el-input-number v-model="form.scanFrequencySeconds" :min="1" style="width: 100%" />
+      <el-form-item label="扫描频率(秒)">
+        <el-input-number v-model="form.scanFrequencySeconds" :min="1" :step-strictly="true" style="width: 100%" />
       </el-form-item>
-      <el-form-item label="未读阈值(秒)">
-        <el-input-number v-model="form.unreadAgeThresholdSeconds" :min="1" style="width: 100%" />
+      <el-form-item label="未读时长(秒)">
+        <el-input-number v-model="form.unreadAgeThresholdSeconds" :min="1" :step-strictly="true" style="width: 100%" />
       </el-form-item>
 
       <el-divider>代理链</el-divider>
@@ -121,6 +121,13 @@ async function handleSave() {
   try {
     await formRef.value.validate()
   } catch {
+    return
+  }
+
+  const freq = Number(form.scanFrequencySeconds)
+  const threshold = Number(form.unreadAgeThresholdSeconds)
+  if (!Number.isInteger(freq) || freq < 1 || !Number.isInteger(threshold) || threshold < 1) {
+    ElMessage.error('扫描频率与未读时长必须为不小于 1 的整数')
     return
   }
 
